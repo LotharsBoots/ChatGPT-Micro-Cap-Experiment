@@ -1,1 +1,7 @@
-Date,Ticker,Shares,Cost Basis,Stop Loss,Current Price,Total Value,PnL,Action,Cash Balance,Total Equity,Buy Price
+Date,Ticker,Shares,Buy Price,Cost Basis,Stop Loss,Current Price,Total Value,PnL,Action,Cash Balance,Total Equity
+2025-09-05,TOTAL,,,,,,6237.11,0.0,,3762.89,10000.0
+2025-09-05,SPY,3,647.24,1941.72,582.52,647.24,1941.72,0.0,HOLD,,
+2025-09-05,IWM,8,237.77,1902.16,213.99,237.77,1902.16,0.0,HOLD,,
+2025-09-05,QQQ,2,576.06,1152.12,518.45,576.06,1152.12,0.0,HOLD,,
+2025-09-05,XBI,13,95.47,1241.11,85.92,95.47,1241.11,0.0,HOLD,,
+2025-09-05,TOTAL,,,,,,6237.11,0.0,,3762.89,10000.0

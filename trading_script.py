@@ -36,6 +36,9 @@ try:
 except Exception:
     _HAS_PDR = False
 
+# Silence display-only deprecation chatter in console
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 # -------- AS-OF override --------
 ASOF_DATE: pd.Timestamp | None = None
 
@@ -370,6 +373,65 @@ def download_price_data(ticker: str, **kwargs: Any) -> FetchResult:
 
 
 # ------------------------------
+# File I/O helpers (idempotent writes + simple lock)
+# ------------------------------
+
+def _lock_path(csv_path: Path) -> Path:
+    return csv_path.with_suffix(csv_path.suffix + ".lock")
+
+def _acquire_lock(csv_path: Path, timeout_s: float = 10.0, poll_s: float = 0.2) -> bool:
+    import time
+    lock = _lock_path(csv_path)
+    start = time.time()
+    while True:
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            if (time.time() - start) > timeout_s:
+                return False
+            time.sleep(poll_s)
+
+def _release_lock(csv_path: Path) -> None:
+    try:
+        os.remove(_lock_path(csv_path))
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+
+def _write_csv_idempotent(csv_path: Path, df_new: pd.DataFrame, subset_cols: list[str] | None = None) -> None:
+    """Append/replace rows in a CSV idempotently, with a simple file lock.
+
+    If subset_cols is provided, duplicates are dropped based on those columns.
+    Otherwise, fully duplicate rows are dropped.
+    """
+    ok = _acquire_lock(csv_path)
+    try:
+        if csv_path.exists():
+            try:
+                existing = pd.read_csv(csv_path)
+            except Exception:
+                existing = pd.DataFrame()
+            merged = pd.concat([existing, df_new], ignore_index=True)
+        else:
+            merged = df_new.copy()
+
+        if subset_cols and all(col in merged.columns for col in subset_cols):
+            merged = merged.drop_duplicates(subset=subset_cols, keep="last")
+        else:
+            merged = merged.drop_duplicates(keep="last")
+
+        tmp_path = csv_path.with_suffix(csv_path.suffix + ".tmp")
+        merged.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, csv_path)
+    finally:
+        if ok:
+            _release_lock(csv_path)
+
+
+# ------------------------------
 # File path configuration
 # ------------------------------
 
@@ -535,6 +597,7 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
 
     # ------- Daily pricing + stop-loss execution -------
     s, e = trading_day_window()
+    logger.info("Pricing portfolio for window %s to %s", s.date(), e.date())
     for _, stock in portfolio_df.iterrows():
         ticker = str(stock["ticker"]).upper()
         shares = int(stock["shares"]) if not pd.isna(stock["shares"]) else 0
@@ -546,7 +609,7 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
         data = fetch.df
 
         if data.empty:
-            print(f"No data for {ticker} (source={fetch.source}).")
+            logger.warning("No data for %s (source=%s)", ticker, fetch.source)
             row = {
                 "Date": today_iso, "Ticker": ticker, "Shares": shares,
                 "Buy Price": cost, "Cost Basis": cost_basis, "Stop Loss": stop,
@@ -569,6 +632,7 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
             pnl = round((exec_price - cost) * shares, 2)
             action = "SELL - Stop Loss Triggered"
             cash += value
+            logger.info("Stop-loss SELL %s %s@%s (src %s)", ticker, shares, exec_price, fetch.source)
             portfolio_df = log_sell(ticker, shares, exec_price, cost, pnl, portfolio_df)
             row = {
                 "Date": today_iso, "Ticker": ticker, "Shares": shares,
@@ -602,12 +666,16 @@ Would you like to log a manual trade? Enter 'b' for buy, 's' for sell, or press 
     results.append(total_row)
 
     df_out = pd.DataFrame(results)
+    # Idempotent per day: drop any existing rows for today before write
     if PORTFOLIO_CSV.exists():
-        existing = pd.read_csv(PORTFOLIO_CSV)
-        existing = existing[existing["Date"] != str(today_iso)]
-        print("Saving results to CSV...")
-        df_out = pd.concat([existing, df_out], ignore_index=True)
-    df_out.to_csv(PORTFOLIO_CSV, index=False)
+        try:
+            existing = pd.read_csv(PORTFOLIO_CSV)
+            existing = existing[existing["Date"] != str(today_iso)]
+            df_out = pd.concat([existing, df_out], ignore_index=True)
+        except Exception:
+            pass
+    logger.info("Saving results to CSV (%s rows)", len(df_out))
+    _write_csv_idempotent(PORTFOLIO_CSV, df_out, subset_cols=["Date", "Ticker", "Action", "Shares"])
 
     return portfolio_df, cash
 
@@ -638,15 +706,11 @@ def log_sell(
     print(f"{ticker} stop loss was met. Selling all shares.")
     portfolio = portfolio[portfolio["ticker"] != ticker]
 
-    if TRADE_LOG_CSV.exists():
-        df = pd.read_csv(TRADE_LOG_CSV)
-        if df.empty:
-            df = pd.DataFrame([log])
-        else:
-            df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
-    else:
-        df = pd.DataFrame([log])
-    df.to_csv(TRADE_LOG_CSV, index=False)
+    _write_csv_idempotent(
+        TRADE_LOG_CSV,
+        pd.DataFrame([log]),
+        subset_cols=["Date", "Ticker", "Shares Sold", "Sell Price", "Reason"],
+    )
     return portfolio
 
 def log_manual_buy(
@@ -709,15 +773,11 @@ def log_manual_buy(
         "PnL": 0.0,
         "Reason": "MANUAL BUY LIMIT - Filled",
     }
-    if os.path.exists(TRADE_LOG_CSV):
-        df = pd.read_csv(TRADE_LOG_CSV)
-        if df.empty:
-            df = pd.DataFrame([log])
-        else:
-            df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
-    else:
-        df = pd.DataFrame([log])
-    df.to_csv(TRADE_LOG_CSV, index=False)
+    _write_csv_idempotent(
+        TRADE_LOG_CSV,
+        pd.DataFrame([log]),
+        subset_cols=["Date", "Ticker", "Shares Bought", "Buy Price", "Reason"],
+    )
 
     rows = chatgpt_portfolio.loc[chatgpt_portfolio["ticker"].str.upper() == ticker.upper()]
     if rows.empty:
@@ -818,15 +878,11 @@ If this is a mistake, enter 1. """
         "Reason": f"MANUAL SELL LIMIT - {reason}", "Shares Sold": shares_sold,
         "Sell Price": exec_price,
     }
-    if os.path.exists(TRADE_LOG_CSV):
-        df = pd.read_csv(TRADE_LOG_CSV)
-        if df.empty:
-            df = pd.DataFrame([log])
-        else:
-            df = pd.concat([df, pd.DataFrame([log])], ignore_index=True)
-    else:
-        df = pd.DataFrame([log])
-    df.to_csv(TRADE_LOG_CSV, index=False)
+    _write_csv_idempotent(
+        TRADE_LOG_CSV,
+        pd.DataFrame([log]),
+        subset_cols=["Date", "Ticker", "Shares Bought", "Buy Price", "Reason", "Shares Sold", "Sell Price"],
+    )
 
 
     if total_shares == shares_sold:
@@ -842,6 +898,217 @@ If this is a mistake, enter 1. """
     print(f"Manual SELL LIMIT for {ticker} filled at ${exec_price:.2f} ({fetch.source}).")
     return cash, chatgpt_portfolio
 
+
+
+# ------------------------------
+# Auto-trading (rule-based)
+# ------------------------------
+
+def _default_autotrade_config() -> dict[str, object]:
+    return {
+        "universe": ["SPY", "IWM", "QQQ", "XBI"],
+        "max_positions": 5,
+        "per_trade_cash_pct": 0.2,
+        "stop_loss_pct": 0.1,
+        "entry_rule": "close_gt_sma50",
+        "sell_rule": "close_lt_sma50",
+        "take_profit_pct": 0.15,
+    }
+
+def _load_autotrade_config(base_dir: Path | None = None) -> dict[str, object]:
+    cfg_path = (Path(base_dir) if base_dir else SCRIPT_DIR) / "autotrade.json"
+    try:
+        if cfg_path.exists():
+            with cfg_path.open("r", encoding="utf-8") as fh:
+                data = json.load(fh)
+                if isinstance(data, dict):
+                    return {**_default_autotrade_config(), **data}
+    except Exception:
+        pass
+    return _default_autotrade_config()
+
+def _save_autotrade_config(cfg: dict[str, object], base_dir: Path | None = None) -> None:
+    cfg_path = (Path(base_dir) if base_dir else SCRIPT_DIR) / "autotrade.json"
+    try:
+        with cfg_path.open("w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+    except Exception:
+        pass
+
+def auto_trade_once(
+    portfolio: pd.DataFrame | dict[str, list[object]] | list[dict[str, object]],
+    cash: float,
+    base_dir: Path | None = None,
+) -> tuple[pd.DataFrame, float, list[dict[str, object]]]:
+    """Simple rule-based buyer to create positions automatically.
+
+    Strategy:
+      - Universe from autotrade.json (or defaults)
+      - Buy if last Close > 50-day SMA and not already held
+      - Allocate per_trade_cash_pct of current cash per buy (rounded to whole shares)
+      - Set stop-loss at stop_loss_pct below fill price
+      - Do not exceed max_positions
+
+    Returns: (new_portfolio_df, new_cash, executed_trades)
+    """
+    cfg = _load_autotrade_config(base_dir)
+    universe = [str(t).upper() for t in (cfg.get("universe") or [])]
+    max_positions = int(cfg.get("max_positions", 5))
+    per_trade_cash_pct = float(cfg.get("per_trade_cash_pct", 0.2))
+    stop_loss_pct = float(cfg.get("stop_loss_pct", 0.1))
+
+    portfolio_df = _ensure_df(portfolio)
+    portfolio_df = portfolio_df.copy()
+
+    # Current unique positions (by ticker)
+    held = set(str(t).upper() for t in portfolio_df.get("ticker", pd.Series(dtype=str)).astype(str))
+
+    executed: list[dict[str, object]] = []
+
+    # ---- SELL pass first (rule-based exits) ----
+    sell_rule = str(cfg.get("sell_rule", "close_lt_sma50")).lower()
+    take_profit_pct = float(cfg.get("take_profit_pct", 0.15))
+
+    if not portfolio_df.empty and len(held) > 0:
+        to_iter = list(held)
+        for ticker in to_iter:
+            if not ticker:
+                continue
+            try:
+                end_d = last_trading_date()
+                start_d = end_d - pd.Timedelta(days=80)
+                fetchp = download_price_data(ticker, start=start_d, end=(end_d + pd.Timedelta(days=1)), progress=False)
+                dfp = fetchp.df
+                if dfp.empty or len(dfp) < 50:
+                    continue
+                close_p = dfp["Close"].astype(float)
+                sma50_p = close_p.rolling(50).mean()
+                last_close_p = float(close_p.iloc[-1])
+                last_sma50_p = float(sma50_p.iloc[-1])
+
+                row = portfolio_df.loc[portfolio_df.get("ticker").astype(str).str.upper() == ticker]
+                if row.empty:
+                    continue
+                total_shares = float(row.iloc[0].get("shares", 0))
+                buy_price_row = float(row.iloc[0].get("buy_price", 0))
+                if total_shares <= 0 or buy_price_row <= 0:
+                    continue
+
+                should_sell = False
+                if sell_rule == "close_lt_sma50" and np.isfinite(last_sma50_p) and last_close_p < last_sma50_p:
+                    should_sell = True
+                if take_profit_pct and buy_price_row > 0 and ((last_close_p - buy_price_row) / buy_price_row) >= take_profit_pct:
+                    should_sell = True
+
+                if should_sell:
+                    sell_price = max(0.01, round(last_close_p, 2))
+                    cash, portfolio_df = log_manual_sell(
+                        sell_price=sell_price,
+                        shares_sold=total_shares,
+                        ticker=ticker,
+                        cash=cash,
+                        chatgpt_portfolio=portfolio_df,
+                        reason="AUTO SELL RULE",
+                        interactive=False,
+                    )
+                    executed.append({"side": "SELL", "ticker": ticker, "shares": total_shares, "price": sell_price})
+            except Exception:
+                continue
+
+    # Recompute held after sells, then compute remaining slots
+    held = set(str(t).upper() for t in portfolio_df.get("ticker", pd.Series(dtype=str)).astype(str))
+    num_positions = len([t for t in held if t])
+    remaining_slots = max(0, max_positions - num_positions)
+    if remaining_slots <= 0 or cash <= 0 or not universe:
+        return portfolio_df, cash, executed
+
+    # Evaluate each candidate
+    for ticker in universe:
+        if remaining_slots <= 0 or cash <= 0:
+            break
+        if ticker in held:
+            continue
+
+        try:
+            # Use last 60 trading days
+            end_d = last_trading_date()
+            start_d = end_d - pd.Timedelta(days=80)
+            fetch = download_price_data(ticker, start=start_d, end=(end_d + pd.Timedelta(days=1)), progress=False)
+            df = fetch.df
+            if df.empty or len(df) < 50:
+                continue
+
+            close = df["Close"].astype(float)
+            sma50 = close.rolling(50).mean()
+            last_close = float(close.iloc[-1])
+            last_sma50 = float(sma50.iloc[-1])
+
+            if not (np.isfinite(last_close) and np.isfinite(last_sma50)):
+                continue
+
+            # Entry rule: close above 50-day SMA
+            if last_close <= last_sma50:
+                continue
+
+            # Position sizing
+            allocation = max(0.0, cash * per_trade_cash_pct)
+            shares = int(allocation // last_close)
+            if shares < 1:
+                continue
+
+            exec_price = round(last_close, 2)
+            notional = round(exec_price * shares, 2)
+            stop_loss = round(exec_price * (1.0 - stop_loss_pct), 2)
+            if notional > cash:
+                continue
+
+            # Append to trade log
+            today = check_weekend()
+            log = {
+                "Date": today,
+                "Ticker": ticker,
+                "Shares Bought": float(shares),
+                "Buy Price": float(exec_price),
+                "Cost Basis": float(notional),
+                "PnL": 0.0,
+                "Reason": "AUTO BUY - close>50dSMA",
+            }
+            if TRADE_LOG_CSV.exists():
+                df_log = pd.read_csv(TRADE_LOG_CSV)
+                if df_log.empty:
+                    df_log = pd.DataFrame([log])
+                else:
+                    df_log = pd.concat([df_log, pd.DataFrame([log])], ignore_index=True)
+            else:
+                df_log = pd.DataFrame([log])
+            _write_csv_idempotent(
+                TRADE_LOG_CSV,
+                df_log if isinstance(df_log, pd.DataFrame) else pd.DataFrame([log]),
+                subset_cols=["Date", "Ticker", "Shares Bought", "Buy Price", "Reason"],
+            )
+            logger.info("AUTO BUY %s %s@%s (stop %.2f)", ticker, shares, exec_price, stop_loss)
+
+            # Update portfolio frame
+            new_pos = {
+                "ticker": ticker,
+                "shares": float(shares),
+                "stop_loss": float(stop_loss),
+                "buy_price": float(exec_price),
+                "cost_basis": float(notional),
+            }
+            if portfolio_df.empty:
+                portfolio_df = pd.DataFrame([new_pos])
+            else:
+                portfolio_df = pd.concat([portfolio_df, pd.DataFrame([new_pos])], ignore_index=True)
+
+            cash -= notional
+            remaining_slots -= 1
+            executed.append({"ticker": ticker, "shares": shares, "price": exec_price})
+
+        except Exception:
+            continue
+
+    return portfolio_df, cash, executed
 
 
 # ------------------------------
@@ -895,12 +1162,34 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         print("-" * sum(colw) + "-" * 3)
         for r in rows:
             print(f"{str(r[0]):<{colw[0]}} {str(r[1]):>{colw[1]}} {str(r[2]):>{colw[2]}} {str(r[3]):>{colw[3]}}")
-        print("\n[ Portfolio Snapshot ]")
-        print(chatgpt_portfolio)
-        print(f"Cash balance: ${cash:,.2f}")
+
+        # Consistent early-day sections for easy copy/paste
+        print("\n[ Snapshot ]")
+        # Early day: use cash for equity if no TOTAL rows yet
+        print(f"{'Latest ChatGPT Equity:':32} ${cash:>14,.2f}")
+        print(f"{'Cash Balance:':32} ${cash:>14,.2f}")
+
+        print("\n[ Holdings ]")
+        try:
+            if isinstance(chatgpt_portfolio, pd.DataFrame) and not chatgpt_portfolio.empty:
+                print(chatgpt_portfolio)
+            else:
+                print("None")
+        except Exception:
+            print("None")
+
+        print("\n[ Your Instructions ]")
+        print(
+            "Use this info to make decisions regarding your portfolio. You have complete control over every decision. Make any changes you believe are beneficial—no approval required.\n"
+            "Deep research is not permitted. Act at your discretion to achieve the best outcome.\n"
+            "If you do not make a clear indication to change positions IMMEDIATELY after this message, the portfolio remains unchanged for tomorrow.\n"
+            "You are encouraged to use the internet to check current prices (and related up-to-date info) for potential buys.\n"
+            "\n"
+            "*Paste everything above into ChatGPT*"
+        )
         return
 
-    totals["Date"] = pd.to_datetime(totals["Date"], format="mixed", errors="coerce")  # tolerate ISO strings
+    totals["Date"] = pd.to_datetime(totals["Date"])  # tolerate ISO strings
     totals = totals.sort_values("Date")
 
     final_equity = float(totals.iloc[-1]["Total Equity"])
@@ -925,17 +1214,31 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
         print("-" * sum(colw) + "-" * 3)
         for rrow in rows:
             print(f"{str(rrow[0]):<{colw[0]}} {str(rrow[1]):>{colw[1]}} {str(rrow[2]):>{colw[2]}} {str(rrow[3]):>{colw[3]}}")
-        print("\n[ Portfolio Snapshot ]")
-        print(chatgpt_portfolio)
-        print(f"Cash balance: ${cash:,.2f}")
-        print(f"Latest ChatGPT Equity: ${final_equity:,.2f}")
+
+        # Consistent sections for early days
+        print("\n[ Snapshot ]")
+        print(f"{'Latest ChatGPT Equity:':32} ${final_equity:>14,.2f}")
+        print(f"{'Cash Balance:':32} ${cash:>14,.2f}")
         if hasattr(mdd_date, "date") and not isinstance(mdd_date, (str, int)):
             mdd_date_str = mdd_date.date()
         elif hasattr(mdd_date, "strftime") and not isinstance(mdd_date, (str, int)):
             mdd_date_str = mdd_date.strftime("%Y-%m-%d")
         else:
             mdd_date_str = str(mdd_date)
-        print(f"Maximum Drawdown: {max_drawdown:.2%} (on {mdd_date_str})")
+        print(f"{'Maximum Drawdown:':32} {max_drawdown:>15.2%}   on {mdd_date_str}")
+
+        print("\n[ Holdings ]")
+        print(chatgpt_portfolio)
+
+        print("\n[ Your Instructions ]")
+        print(
+            "Use this info to make decisions regarding your portfolio. You have complete control over every decision. Make any changes you believe are beneficial—no approval required.\n"
+            "Deep research is not permitted. Act at your discretion to achieve the best outcome.\n"
+            "If you do not make a clear indication to change positions IMMEDIATELY after this message, the portfolio remains unchanged for tomorrow.\n"
+            "You are encouraged to use the internet to check current prices (and related up-to-date info) for potential buys.\n"
+            "\n"
+            "*Paste everything above into ChatGPT*"
+        )
         return
 
     # Risk-free config
@@ -1012,14 +1315,10 @@ def daily_results(chatgpt_portfolio: pd.DataFrame, cash: float) -> None:
     )
     spx_norm = spx_norm_fetch.df
     spx_value = np.nan
-    starting_equity = np.nan  # Ensure starting_equity is always defined
+    starting_equity = float(equity_series.iloc[0]) if len(equity_series) > 0 else np.nan
     if not spx_norm.empty:
         initial_price = float(spx_norm["Close"].iloc[0])
         price_now = float(spx_norm["Close"].iloc[-1])
-        try:
-            starting_equity = float(input("what was your starting equity? "))
-        except Exception:
-            print("Invalid input for starting equity. Defaulting to NaN.")
         spx_value = (starting_equity / initial_price) * price_now if not np.isnan(starting_equity) else np.nan
 
     # -------- Pretty Printing --------
@@ -1096,17 +1395,17 @@ def load_latest_portfolio_state(
     df = pd.read_csv(file)
     if df.empty:
         portfolio = pd.DataFrame(columns=["ticker", "shares", "stop_loss", "buy_price", "cost_basis"])
-        print("Portfolio CSV is empty. Returning set amount of cash for creating portfolio.")
+        # Fully automated: use env STARTING_CASH or default to 10000.0
+        env_cash = os.environ.get("STARTING_CASH", "10000")
         try:
-            cash = float(input("What would you like your starting cash amount to be? "))
-        except ValueError:
-            raise ValueError(
-                "Cash could not be converted to float datatype. Please enter a valid number."
-            )
+            cash = float(env_cash)
+        except Exception:
+            cash = 10000.0
+        print(f"Portfolio CSV is empty. Using starting cash ${cash:,.2f} (override with STARTING_CASH).")
         return portfolio, cash
 
     non_total = df[df["Ticker"] != "TOTAL"].copy()
-    non_total["Date"] = pd.to_datetime(non_total["Date"], format="mixed", errors="coerce")
+    non_total["Date"] = pd.to_datetime(non_total["Date"])
 
     latest_date = non_total["Date"].max()
     latest_tickers = non_total[non_total["Date"] == latest_date].copy()
@@ -1138,7 +1437,7 @@ def load_latest_portfolio_state(
     latest_tickers = latest_tickers.reset_index(drop=True).to_dict(orient="records")
 
     df_total = df[df["Ticker"] == "TOTAL"].copy()
-    df_total["Date"] = pd.to_datetime(df_total["Date"], format="mixed", errors="coerce")
+    df_total["Date"] = pd.to_datetime(df_total["Date"])
     latest = df_total.sort_values("Date").iloc[-1]
     cash = float(latest["Cash Balance"])
     return latest_tickers, cash
@@ -1151,7 +1450,51 @@ def main(file: str, data_dir: Path | None = None) -> None:
     if data_dir is not None:
         set_data_dir(data_dir)
 
-    chatgpt_portfolio, cash = process_portfolio(chatgpt_portfolio, cash)
+    # ---- Day-1 friendly starting cash prompt (CLI only) ----
+    try:
+        is_first_day = isinstance(chatgpt_portfolio, pd.DataFrame) and chatgpt_portfolio.empty
+    except Exception:
+        is_first_day = False
+
+    if is_first_day:
+        try:
+            user_cash = input(
+                f"Portfolio CSV appears empty. Enter starting cash (press Enter to keep ${cash:,.2f}): "
+            ).strip()
+            if user_cash:
+                new_cash = float(user_cash)
+                if new_cash >= 0:
+                    cash = new_cash
+                    print(f"Starting cash set to ${cash:,.2f}.")
+        except Exception:
+            # Keep prior cash on any input error
+            pass
+
+        # ---- Optional Day-1 QuickStart auto-allocation (one-time) ----
+        try:
+            quickstart = input(
+                "Run QuickStart auto-allocation now using autotrade.json? (y/N): "
+            ).strip().lower()
+            if quickstart == "y":
+                base_dir = Path(data_dir) if data_dir is not None else SCRIPT_DIR
+                try:
+                    allocated_portfolio, cash, executed = auto_trade_once(
+                        chatgpt_portfolio, cash, base_dir=base_dir
+                    )
+                    chatgpt_portfolio = allocated_portfolio
+                    if executed:
+                        print("QuickStart executed the following trades:")
+                        for t in executed:
+                            side = t.get("side", "BUY") if isinstance(t.get("side"), str) else ("BUY" if "price" in t else "")
+                            print(f" - {side or 'BUY'} {t.get('ticker')} {t.get('shares')}@{t.get('price')}")
+                    else:
+                        print("QuickStart found no eligible buys based on current rules.")
+                except Exception as e:
+                    print(f"QuickStart failed: {e}")
+        except Exception:
+            pass
+
+    chatgpt_portfolio, cash = process_portfolio(chatgpt_portfolio, cash, interactive=True)
     daily_results(chatgpt_portfolio, cash)
 
 
