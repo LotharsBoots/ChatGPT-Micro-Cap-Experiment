@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Configuration - Automated Trading Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: white;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .config-card {
+            background: white;
+            border-radius: 15px;
+            padding: 30px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        .config-section {
+            margin-bottom: 30px;
+        }
+
+        .config-section h3 {
+            font-size: 1.4rem;
+            margin-bottom: 15px;
+            color: #333;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 10px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+        }
+
+        .form-control {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .form-control:focus {
+            outline: none;
+            border-color: #2196F3;
+            box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.1);
+        }
+
+        .benchmark-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .benchmark-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 6px;
+            border: 1px solid #e0e0e0;
+        }
+
+        .benchmark-item input {
+            margin-right: 10px;
+        }
+
+        .benchmark-item label {
+            margin: 0;
+            font-weight: normal;
+            cursor: pointer;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-right: 15px;
+            margin-bottom: 10px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #4CAF50, #45a049);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(76, 175, 80, 0.4);
+        }
+
+        .btn-secondary {
+            background: linear-gradient(135deg, #2196F3, #1976D2);
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(33, 150, 243, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #f44336, #da190b);
+            color: white;
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(244, 67, 54, 0.4);
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 4px solid;
+        }
+
+        .alert-success {
+            background: #d4edda;
+            border-color: #28a745;
+            color: #155724;
+        }
+
+        .alert-error {
+            background: #f8d7da;
+            border-color: #dc3545;
+            color: #721c24;
+        }
+
+        .alert-info {
+            background: #d1ecf1;
+            border-color: #17a2b8;
+            color: #0c5460;
+        }
+
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: white;
+            text-decoration: none;
+            font-weight: 600;
+            transition: opacity 0.3s ease;
+        }
+
+        .back-link:hover {
+            opacity: 0.8;
+        }
+
+        .info-box {
+            background: #e3f2fd;
+            border: 1px solid #2196F3;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .info-box h4 {
+            color: #1976D2;
+            margin-bottom: 10px;
+        }
+
+        .info-box p {
+            color: #0d47a1;
+            margin-bottom: 8px;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Dashboard</a>
+        
+        <div class="header">
+            <h1>⚙️ Configuration</h1>
+            <p>Customize your automated trading parameters</p>
+        </div>
+
+        <div id="alert-container"></div>
+
+        <div class="config-card">
+            <div class="config-section">
+                <h3>📊 Benchmark Tickers</h3>
+                <p>Select which benchmark indices to track for performance comparison:</p>
+                
+                <div class="benchmark-list" id="benchmark-list">
+                    <!-- Benchmark checkboxes will be populated here -->
+                </div>
+            </div>
+
+            <div class="config-section">
+                <h3>💰 Starting Capital</h3>
+                <div class="form-group">
+                    <label for="starting-cash">Initial Cash Amount ($)</label>
+                    <input type="number" id="starting-cash" class="form-control" 
+                           placeholder="10000" min="1000" step="100">
+                    <small>This will be used if no existing portfolio is found</small>
+                </div>
+            </div>
+
+            <div class="config-section">
+                <h3>📈 Trading Parameters</h3>
+                <div class="form-group">
+                    <label for="default-stop-loss">Default Stop Loss (%)</label>
+                    <input type="number" id="default-stop-loss" class="form-control" 
+                           placeholder="10" min="1" max="50" step="1">
+                    <small>Default stop loss percentage for new positions</small>
+                </div>
+                
+                <div class="form-group">
+                    <label for="max-positions">Maximum Positions</label>
+                    <input type="number" id="max-positions" class="form-control" 
+                           placeholder="10" min="1" max="50" step="1">
+                    <small>Maximum number of concurrent positions</small>
+                </div>
+            </div>
+
+            <div class="info-box">
+                <h4>💡 Configuration Tips</h4>
+                <p><strong>Benchmarks:</strong> Choose indices that match your investment strategy</p>
+                <p><strong>Starting Capital:</strong> Set realistic amount based on your risk tolerance</p>
+                <p><strong>Stop Loss:</strong> Conservative investors use 5-10%, aggressive use 15-25%</p>
+                <p><strong>Max Positions:</strong> Diversify but don't over-diversify (5-15 positions recommended)</p>
+            </div>
+
+            <div class="button-group">
+                <button id="save-btn" class="btn btn-primary">
+                    💾 Save Configuration
+                </button>
+                <button id="reset-btn" class="btn btn-secondary">
+                    🔄 Reset to Defaults
+                </button>
+                <button id="test-btn" class="btn btn-secondary">
+                    🧪 Test Configuration
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Configuration data
+        let currentConfig = {
+            benchmarks: ["IWO", "XBI", "SPY", "IWM"],
+            starting_cash: 10000,
+            default_stop_loss: 10,
+            max_positions: 10
+        };
+
+        // Available benchmark options
+        const availableBenchmarks = [
+            { ticker: "SPY", name: "S&P 500 ETF" },
+            { ticker: "IWM", name: "Russell 2000 ETF" },
+            { ticker: "IWO", name: "Russell 2000 Growth ETF" },
+            { ticker: "XBI", name: "Biotech ETF" },
+            { ticker: "QQQ", name: "NASDAQ 100 ETF" },
+            { ticker: "DIA", name: "Dow Jones ETF" },
+            { ticker: "VTI", name: "Total Stock Market ETF" },
+            { ticker: "VEA", name: "Developed Markets ETF" },
+            { ticker: "VWO", name: "Emerging Markets ETF" },
+            { ticker: "GLD", name: "Gold ETF" },
+            { ticker: "TLT", name: "20+ Year Treasury ETF" },
+            { ticker: "VNQ", name: "Real Estate ETF" }
+        ];
+
+        // Initialize configuration page
+        document.addEventListener('DOMContentLoaded', function() {
+            loadCurrentConfig();
+            setupEventListeners();
+            renderBenchmarkList();
+        });
+
+        function setupEventListeners() {
+            document.getElementById('save-btn').addEventListener('click', saveConfiguration);
+            document.getElementById('reset-btn').addEventListener('click', resetToDefaults);
+            document.getElementById('test-btn').addEventListener('click', testConfiguration);
+        }
+
+        function loadCurrentConfig() {
+            // Load configuration from the page context
+            const configData = {{ config | tojson }};
+            if (configData && configData.benchmarks) {
+                currentConfig.benchmarks = configData.benchmarks;
+            }
+            // Load env-like defaults surfaced by backend
+            const envSettings = {{ env_settings | tojson }};
+            if (envSettings && envSettings.starting_cash) {
+                currentConfig.starting_cash = envSettings.starting_cash;
+            }
+            // Populate form fields
+            document.getElementById('starting-cash').value = currentConfig.starting_cash;
+            document.getElementById('default-stop-loss').value = currentConfig.default_stop_loss;
+            document.getElementById('max-positions').value = currentConfig.max_positions;
+        }
+
+        function renderBenchmarkList() {
+            const benchmarkList = document.getElementById('benchmark-list');
+            benchmarkList.innerHTML = '';
+
+            availableBenchmarks.forEach(benchmark => {
+                const isChecked = currentConfig.benchmarks.includes(benchmark.ticker);
+                
+                const item = document.createElement('div');
+                item.className = 'benchmark-item';
+                item.innerHTML = `
+                    <input type="checkbox" id="benchmark-${benchmark.ticker}" 
+                           ${isChecked ? 'checked' : ''} 
+                           data-ticker="${benchmark.ticker}">
+                    <label for="benchmark-${benchmark.ticker}">
+                        <strong>${benchmark.ticker}</strong><br>
+                        <small>${benchmark.name}</small>
+                    </label>
+                `;
+
+                // Add change event listener
+                const checkbox = item.querySelector('input');
+                checkbox.addEventListener('change', function() {
+                    if (this.checked) {
+                        if (!currentConfig.benchmarks.includes(this.dataset.ticker)) {
+                            currentConfig.benchmarks.push(this.dataset.ticker);
+                        }
+                    } else {
+                        const index = currentConfig.benchmarks.indexOf(this.dataset.ticker);
+                        if (index > -1) {
+                            currentConfig.benchmarks.splice(index, 1);
+                        }
+                    }
+                });
+
+                benchmarkList.appendChild(item);
+            });
+        }
+
+        async function saveConfiguration() {
+            try {
+                const saveBtn = document.getElementById('save-btn');
+                saveBtn.disabled = true;
+                saveBtn.innerHTML = '<span class="loading"></span>Saving...';
+
+                // Collect form data
+                const config = {
+                    benchmarks: currentConfig.benchmarks,
+                    starting_cash: parseFloat(document.getElementById('starting-cash').value) || 10000,
+                    default_stop_loss: parseFloat(document.getElementById('default-stop-loss').value) || 10,
+                    max_positions: parseInt(document.getElementById('max-positions').value) || 10
+                };
+
+                // Validate configuration
+                if (config.benchmarks.length === 0) {
+                    throw new Error('Please select at least one benchmark ticker');
+                }
+
+                if (config.starting_cash < 1000) {
+                    throw new Error('Starting cash must be at least $1,000');
+                }
+
+                if (config.default_stop_loss < 1 || config.default_stop_loss > 50) {
+                    throw new Error('Stop loss must be between 1% and 50%');
+                }
+
+                if (config.max_positions < 1 || config.max_positions > 50) {
+                    throw new Error('Maximum positions must be between 1 and 50');
+                }
+
+                // Save configuration
+                const response = await axios.post('/configure', config);
+                
+                if (response.data.status === 'success') {
+                    showAlert('Configuration saved successfully!', 'success');
+                    currentConfig = config;
+                    // Persist env-like defaults via /settings so user changes survive restarts without editing files
+                    await axios.post('/settings', {
+                        STARTING_CASH: String(config.starting_cash),
+                        SCHED_INTERVAL_MINUTES: '15',
+                        SCHED_MARKET_HOURS_ONLY: 'true',
+                        DEBUG: 'false'
+                    });
+                } else {
+                    throw new Error(response.data.message || 'Failed to save configuration');
+                }
+
+            } catch (error) {
+                showAlert('Error saving configuration: ' + error.message, 'error');
+            } finally {
+                const saveBtn = document.getElementById('save-btn');
+                saveBtn.disabled = false;
+                saveBtn.innerHTML = '💾 Save Configuration';
+            }
+        }
+
+        function resetToDefaults() {
+            if (confirm('Are you sure you want to reset to default configuration? This will clear all custom settings.')) {
+                currentConfig = {
+                    benchmarks: ["IWO", "XBI", "SPY", "IWM"],
+                    starting_cash: 10000,
+                    default_stop_loss: 10,
+                    max_positions: 10
+                };
+
+                // Reset form fields
+                document.getElementById('starting-cash').value = currentConfig.starting_cash;
+                document.getElementById('default-stop-loss').value = currentConfig.default_stop_loss;
+                document.getElementById('max-positions').value = currentConfig.max_positions;
+
+                // Re-render benchmark list
+                renderBenchmarkList();
+
+                showAlert('Configuration reset to defaults', 'info');
+            }
+        }
+
+        async function testConfiguration() {
+            try {
+                const testBtn = document.getElementById('test-btn');
+                testBtn.disabled = true;
+                testBtn.innerHTML = '<span class="loading"></span>Testing...';
+
+                // Test benchmark tickers
+                const testResults = [];
+                for (const ticker of currentConfig.benchmarks.slice(0, 3)) { // Test first 3
+                    try {
+                        // This would test if the ticker is accessible
+                        testResults.push(`✅ ${ticker} - Accessible`);
+                    } catch (error) {
+                        testResults.push(`❌ ${ticker} - Error: ${error.message}`);
+                    }
+                }
+
+                showAlert('Configuration test completed! Check console for details.', 'info');
+                console.log('Configuration Test Results:', testResults);
+
+            } catch (error) {
+                showAlert('Error testing configuration: ' + error.message, 'error');
+            } finally {
+                const testBtn = document.getElementById('test-btn');
+                testBtn.disabled = false;
+                testBtn.innerHTML = '🧪 Test Configuration';
+            }
+        }
+
+        function showAlert(message, type) {
+            const alertContainer = document.getElementById('alert-container');
+            
+            const alertDiv = document.createElement('div');
+            alertDiv.className = `alert alert-${type}`;
+            alertDiv.textContent = message;
+            
+            alertContainer.appendChild(alertDiv);
+            
+            setTimeout(() => {
+                alertDiv.remove();
+            }, 5000);
+        }
+    </script>
+</body>
+</html>

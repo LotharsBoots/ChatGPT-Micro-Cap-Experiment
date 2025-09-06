@@ -1,0 +1,11 @@
+{
+  "universe": [
+    "SPY",
+    "IWM",
+    "QQQ",
+    "XBI"
+  ],
+  "max_positions": 5,
+  "per_trade_cash_pct": 0.15,
+  "stop_loss_pct": 0.1
+}
