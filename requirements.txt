@@ -1,0 +1,16 @@
+Flask==2.3.3
+Flask-SocketIO==5.3.6
+python-socketio==5.8.0
+python-engineio==4.7.1
+pandas==2.2.2
+numpy==2.0.2
+yfinance==0.2.18
+pandas-datareader==0.10.0
+requests==2.31.0
+Werkzeug==2.3.7
+setuptools>=70.0.0
+wheel>=0.41.2
+APScheduler==3.10.4
+pytz==2024.1
+python-dotenv==1.0.1
+openai==1.30.1
