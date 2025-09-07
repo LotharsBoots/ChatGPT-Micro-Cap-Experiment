@@ -1,5 +1,5 @@
 {
-  "STARTING_CASH": "10000",
+  "STARTING_CASH": "3500",
   "SCHED_INTERVAL_MINUTES": "15",
   "SCHED_MARKET_HOURS_ONLY": "true",
   "DEBUG": "false"
