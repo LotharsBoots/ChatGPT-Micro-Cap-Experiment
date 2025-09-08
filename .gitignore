@@ -54,3 +54,4 @@ Documents/
 
 # Project files to ignore
 CLAUDE.md
+.env
