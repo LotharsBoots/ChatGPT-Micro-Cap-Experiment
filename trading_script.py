@@ -1459,7 +1459,7 @@ def main(file: str, data_dir: Path | None = None) -> None:
     if is_first_day:
         try:
             user_cash = input(
-                f"Portfolio CSV appears empty. Enter starting cash (press Enter to keep ${cash:,.2f}): "
+                f"Please enter cash amount you would like invest. (press Enter to keep ${cash:,.2f}): "
             ).strip()
             if user_cash:
                 new_cash = float(user_cash)
@@ -1473,7 +1473,7 @@ def main(file: str, data_dir: Path | None = None) -> None:
         # ---- Optional Day-1 QuickStart auto-allocation (one-time) ----
         try:
             quickstart = input(
-                "Run QuickStart auto-allocation now using autotrade.json? (y/N): "
+                "Would you like to start investing right away? (y/N): "
             ).strip().lower()
             if quickstart == "y":
                 base_dir = Path(data_dir) if data_dir is not None else SCRIPT_DIR
