@@ -1,44 +1,43 @@
-r"""End-of-day (EOD) automation: call OpenAI, produce orders_queue.json, email summary.
+r"""End-of-day (EOD) automation: call OpenAI (Prompt ID), produce orders_queue.json, email summary.
 
 Behavior:
 - Loads portfolio state from Start Your Own CSVs using existing trading_script helpers
-- Calls OpenAI with a strict-JSON prompt (no prose) to get buy/sell intents
-- Validates & normalizes into a unified order list for the next market open
+- Calls your saved OpenAI Platform Prompt by ID with ONLY the user-side variables
+- Requires STRICT JSON {buy:[], sell:[]} and validates/normalizes for next market open
 - Writes Start Your Own\orders_queue.json with idempotency (no duplicates)
 - Sends an email summary via Mailgun if configured
-
-This keeps code simple and relies on your existing CSV formats and helpers.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 import hashlib
 import json
 import os
 import re
 import sys
-
+from datetime import datetime, UTC
 from dotenv import load_dotenv
+
 
 from trading_script import (
     load_latest_portfolio_state,
     set_data_dir,
 )
 
+# ----------------------------
+# Paths, IO, helpers (unchanged)
+# ----------------------------
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent
 
-
 def _start_your_own_dir() -> Path:
     return _project_root() / "Start Your Own"
 
-
 def _orders_path() -> Path:
     return _start_your_own_dir() / "orders_queue.json"
-
 
 def _read_json(path: Path) -> Any:
     try:
@@ -47,7 +46,6 @@ def _read_json(path: Path) -> Any:
     except Exception:
         return None
 
-
 def _write_json(path: Path, data: Any) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -55,11 +53,9 @@ def _write_json(path: Path, data: Any) -> None:
         json.dump(data, fh, indent=2)
     os.replace(tmp, path)
 
-
 def _hash_id(parts: List[str]) -> str:
     h = hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
     return h
-
 
 def _strict_upper_ticker(t: str) -> str:
     up = str(t).strip().upper()
@@ -67,59 +63,12 @@ def _strict_upper_ticker(t: str) -> str:
         raise ValueError(f"Invalid ticker: {t}")
     return up
 
-
-def _normalize_orders(model_json: Dict[str, Any], portfolio_cash: float) -> List[Dict[str, Any]]:
-    orders: List[Dict[str, Any]] = []
-    def add(side: str, item: Dict[str, Any]) -> None:
-        ticker = _strict_upper_ticker(item.get("ticker", ""))
-        order_type = str(item.get("order_type", "")).upper()
-        limit_price = item.get("limit_price")
-        qty = None
-        if "quantity" in item:
-            qty = int(float(item["quantity"]))
-        elif "percent" in item:
-            pct = float(item["percent"])  # 0..1
-            # very rough placeholder sizing using cash only; execution calc is done later
-            # ensure at least 1 share attempt if any positive pct
-            approx_price = 1.0  # unknown now; executor will validate final qty
-            qty = max(1, int((portfolio_cash * pct) // approx_price))
-        if qty is None or qty <= 0:
-            raise ValueError("quantity/percent must produce positive qty")
-        if order_type not in {"MOO", "LOO"}:
-            raise ValueError("order_type must be MOO or LOO for next_open flow")
-        if order_type == "LOO" and (limit_price is None or float(limit_price) <= 0):
-            raise ValueError("LOO requires limit_price > 0")
-        oid = _hash_id([ticker, side, str(qty), order_type, str(limit_price or "" )])
-        orders.append({
-            "id": oid,
-            "ticker": ticker,
-            "side": side.lower(),
-            "quantity": int(qty),
-            "order_type": order_type,
-            "limit_price": (float(limit_price) if limit_price is not None else None),
-            "validity": "next_open",
-            "rationale": "LLM decision",
-        })
-
-    for side_key in ("buy", "sell"):
-        raw = model_json.get(side_key) or []
-        if not isinstance(raw, list):
-            continue
-        for it in raw:
-            if not isinstance(it, dict):
-                continue
-            add("buy" if side_key == "buy" else "sell", it)
-    return orders
-
-
 def _norm_status(value: object) -> str:
     """Normalize a status string for case-insensitive comparisons."""
     return str(value or "").strip().lower()
 
-
 def _is_final_status(status: str) -> bool:
     return _norm_status(status) in {"filled", "cancelled", "canceled"}
-
 
 def _coalesce_pending(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Combine pending intents with identical keys into single orders.
@@ -162,91 +111,140 @@ def _coalesce_pending(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         out.append(item)
     return out
 
+def _normalize_orders(model_json: Dict[str, Any], portfolio_cash: float) -> List[Dict[str, Any]]:
+    """Validate and normalize model JSON {buy:[], sell:[]} into our order schema."""
+    if not isinstance(model_json, dict):
+        raise ValueError("Model output must be a JSON object")
+    for k in ("buy", "sell"):
+        if k not in model_json or not isinstance(model_json[k], list):
+            raise ValueError(f"Model output missing '{k}' list")
 
-def _resolve_model_and_base() -> tuple[str, str | None]:
-    """Determine the OpenAI model and optional base URL from env.
+    orders: List[Dict[str, Any]] = []
 
-    Prefers OPENAI_MODEL, then LLM_MODEL, defaults to 'gpt-5'.
-    """
-    load_dotenv()
-    model_name = os.getenv("OPENAI_MODEL") or os.getenv("LLM_MODEL") or "gpt-5"
-    base_url = os.getenv("OPENAI_BASE_URL")
-    return model_name, base_url
+    def add(side: str, item: Dict[str, Any]) -> None:
+        ticker = _strict_upper_ticker(item.get("ticker", ""))
+        order_type = str(item.get("order_type", "")).upper()
+        limit_price = item.get("limit_price")
+        qty = None
 
+        if "quantity" in item:
+            qty = int(float(item["quantity"]))
+        elif "percent" in item:
+            pct = float(item["percent"])  # 0..1
+            # Rough placeholder sizing using cash only; executor will finalize qty with prices
+            approx_price = 1.0
+            qty = max(1, int((portfolio_cash * pct) // approx_price))
 
-def _call_openai_strict(prompt_payload: Dict[str, Any]) -> Dict[str, Any]:
-    from openai import OpenAI
-    load_dotenv()
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise SystemExit("OPENAI_API_KEY missing in .env")
-    # Allow model/base URL configuration via env for flexibility
-    model_name, base_url = _resolve_model_and_base()
-    client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
-    print(f"Using OpenAI model: {model_name}{' via ' + base_url if base_url else ''}")
-    # Load system prompt from file or env override for long-term maintainability
-    prompt_path = os.getenv("EOD_SYSTEM_PROMPT_FILE") or str(_project_root() / "templates" / "eod_system.txt")
-    try:
-        with open(prompt_path, "r", encoding="utf-8") as fh:
-            system = fh.read().strip()
-    except Exception:
-        system = (
-            "You are a trading assistant. Return ONLY valid JSON with keys 'buy' and 'sell'. "
-            "Schema: {buy:[{ticker,percent|quantity,order_type(MOO|LOO),limit_price?}], "
-            "sell:[{ticker,percent|quantity,order_type(MOO|LOO),limit_price?}]}. No prose."
+        if qty is None or qty <= 0:
+            raise ValueError("quantity/percent must produce positive qty")
+        if order_type not in {"MOO", "LOO"}:
+            raise ValueError("order_type must be MOO or LOO for next_open flow")
+        if order_type == "LOO" and (limit_price is None or float(limit_price) <= 0):
+            raise ValueError("LOO requires limit_price > 0")
+
+        oid = _hash_id([ticker, side, str(qty), order_type, str(limit_price or "")])
+        orders.append({
+            "id": oid,
+            "ticker": ticker,
+            "side": side.lower(),
+            "quantity": int(qty),
+            "order_type": order_type,
+            "limit_price": (float(limit_price) if limit_price is not None else None),
+            "validity": "next_open",
+            "rationale": "LLM decision",
+        })
+
+    for side_key in ("buy", "sell"):
+        for it in model_json.get(side_key, []):
+            if isinstance(it, dict):
+                add("buy" if side_key == "buy" else "sell", it)
+
+    return orders
+
+# ----------------------------
+# OpenAI: Prompt ID call ONLY
+# ----------------------------
+
+def _extract_holdings(portfolio: Any) -> List[Dict[str, Any]]:
+    """Derive a simple holdings list [{ticker, shares}] from generic portfolio rows."""
+    out: List[Dict[str, Any]] = []
+    if not isinstance(portfolio, list):
+        return out
+    for row in portfolio:
+        if not isinstance(row, dict):
+            continue
+        ticker = (
+            row.get("ticker") or row.get("symbol") or row.get("Ticker") or row.get("SYMBOL")
         )
-    # Determine reasoning setting (default high), only used for GPT-5 path
-    reasoning_effort = (os.getenv("LLM_REASONING") or "high").strip().lower()
-    is_gpt5 = model_name.lower().startswith("gpt-5")
-
-    try:
-        if is_gpt5:
-            # Use Responses API with reasoning for GPT-5
-            resp = client.responses.create(
-                model=model_name,
-                reasoning={"effort": reasoning_effort},
-                input=[
-                    {"role": "developer", "content": [{"type": "input_text", "text": system}]},
-                    {"role": "user", "content": [{"type": "input_text", "text": json.dumps(prompt_payload)}]},
-                ],
-            )
-            # Prefer robust accessor
+        shares = (
+            row.get("shares") or row.get("qty") or row.get("quantity") or row.get("Shares") or 0
+        )
+        if ticker:
             try:
-                content = resp.output_text  # type: ignore[attr-defined]
+                qty = int(float(shares))
             except Exception:
-                try:
-                    content = resp.output[-1].content[0].text  # type: ignore[index]
-                except Exception:
-                    content = str(resp)
-        else:
-            # Legacy chat.completions path for non-GPT-5 models
-            resp = client.chat.completions.create(
-                model=model_name,
-                temperature=0.2,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": json.dumps(prompt_payload)},
-                ],
-            )
-            content = resp.choices[0].message.content if (resp and getattr(resp, "choices", None)) else "{}"
-    except Exception as exc:
-        # Safe fallback to a widely-available model to keep automation running
-        fallback_model = "gpt-4o-mini"
-        print(f"Warning: model '{model_name}' failed ({exc}). Falling back to '{fallback_model}'.")
-        resp = client.chat.completions.create(
-            model=fallback_model,
-            temperature=0.2,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": json.dumps(prompt_payload)},
-            ],
-        )
-        content = resp.choices[0].message.content if (resp and getattr(resp, "choices", None)) else "{}"
-    # strip code fences if present
-    content = content.strip()
-    content = content.replace("```json", "").replace("```", "").strip()
-    return json.loads(content or "{}")
+                qty = 0
+            out.append({"ticker": str(ticker).upper(), "shares": qty})
+    return out
 
+def _call_deep_research_via_prompt_id(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Call your saved Platform Prompt by ID with ONLY user-side variables."""
+    from openai import OpenAI
+
+    load_dotenv()
+    pid = os.getenv("DEEP_RESEARCH_PROMPT_ID")
+    if not pid:
+        raise SystemExit("DEEP_RESEARCH_PROMPT_ID missing in .env")
+    pver = os.getenv("DEEP_RESEARCH_PROMPT_VERSION")  # optional
+    reasoning_effort = (os.getenv("LLM_REASONING") or "high").strip().lower()
+
+    client = OpenAI()  # uses OPENAI_API_KEY from env
+
+    prompt_obj: Dict[str, Any] = {"id": pid}
+    if pver:
+        prompt_obj["version"] = pver
+
+    # Send ONLY a user message containing our JSON payload; developer/tools live in the Prompt
+    resp = client.responses.create(
+        prompt=prompt_obj,
+        input=[{
+            "role": "user",
+            "content": [{"type": "input_text", "text": json.dumps(payload)}]
+        }],
+        reasoning={"effort": reasoning_effort},
+        # Intentionally omit 'model' to use the prompt’s saved model (keeps Platform in sync)
+    )
+
+    # Robust text extraction
+    try:
+        text = resp.output_text  # preferred accessor
+    except Exception:
+        try:
+            text = resp.output[-1].content[0].text
+        except Exception as e:
+            raise RuntimeError(f"Could not extract text from response: {e}")
+
+    # Strip any code fences and parse JSON
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`")
+        nl = t.find("\n")
+        if nl != -1 and "json" in t[:nl].lower():
+            t = t[nl + 1 :].strip()
+
+    try:
+        obj = json.loads(t or "{}")
+    except Exception as e:
+        raise ValueError(f"Deep Research returned non-JSON: {e}\nRAW:\n{text[:1200]}")
+
+    # Basic top-level validation here; deeper checks in _normalize_orders
+    if not isinstance(obj, dict) or "buy" not in obj or "sell" not in obj:
+        raise ValueError("Deep Research output must be an object with 'buy' and 'sell' lists")
+    return obj
+
+# ----------------------------
+# Email summary (unchanged)
+# ----------------------------
 
 def _email_mailgun(subject: str, text: str) -> None:
     import requests
@@ -267,6 +265,61 @@ def _email_mailgun(subject: str, text: str) -> None:
     except Exception:
         pass
 
+# ----------------------------
+# Main: Friday automation path
+# ----------------------------
+
+CONSTANT_INSTRUCTIONS = (
+    "Last analysis thesis for current holdings. Use this info to make decisions regarding your portfolio. "
+    "You have complete control over every decision. Make any changes you believe are beneficial. No approval required. "
+    "Act at your discretion to achieve the best outcome. If you do not make a clear indication to change positions "
+    "immediately after this message, then the portfolio remains unchanged for tomorrow."
+)
+
+def _build_payload_for_prompt(portfolio: Any, cash: float) -> Dict[str, Any]:
+    """Build the exact user-side payload your Prompt expects."""
+    load_dotenv()
+    # Optional experiment markers (set in your scheduler env)
+    week = os.getenv("EXPERIMENT_WEEK")
+    day = os.getenv("EXPERIMENT_DAY")
+
+    # Optional extras
+    latest_equity_env = os.getenv("LATEST_CHATGPT_EQUITY")
+    min_drawdown_env = os.getenv("MIN_DRAWDOWN")
+
+    try:
+        latest_equity = float(latest_equity_env) if latest_equity_env not in (None, "") else None
+    except Exception:
+        latest_equity = None
+    try:
+        min_drawdown = float(min_drawdown_env) if min_drawdown_env not in (None, "") else None
+    except Exception:
+        min_drawdown = None
+
+    holdings = _extract_holdings(portfolio)
+
+    # A small snapshot with simple facts; your Prompt will do the heavy lifting
+    snapshot = {
+        "positions_count": len(holdings),
+        "cash_balance": float(cash),
+        "latest_chatgpt_equity": latest_equity,
+    }
+
+    payload: Dict[str, Any] = {
+        "context": {
+            "date": datetime.now(UTC).date().isoformat(),
+            "week": int(week) if week else None,
+            "day": int(day) if day else None,
+        },
+        "snapshot": snapshot,
+        "holdings": holdings,
+        "cash_balance": float(cash),
+        "portfolio": portfolio,
+        "latest_chatgpt_equity": latest_equity,
+        "min_drawdown": min_drawdown,
+        "instructions": CONSTANT_INSTRUCTIONS,
+    }
+    return payload
 
 def main() -> None:
     root = _project_root()
@@ -277,45 +330,21 @@ def main() -> None:
     portfolio_csv = syo / "chatgpt_portfolio_update.csv"
     portfolio, cash = load_latest_portfolio_state(str(portfolio_csv))
 
-    # Build a compact payload the LLM can use (optionally include research context and guidance)
-    payload = {
-        "portfolio": portfolio,
-        "cash": cash,
-        "instruction": "Return ONLY JSON per schema with your buy/sell for next_open.",
-    }
-    # Optional: include text context from a folder if RESEARCH_DIR is set
-    research_dir = os.getenv("RESEARCH_DIR")
-    if research_dir:
-        try:
-            ctx_parts: List[str] = []
-            p = Path(research_dir)
-            for fp in sorted(p.glob("**/*.md"))[:20]:  # bound for safety
-                try:
-                    ctx_parts.append(fp.read_text(encoding="utf-8")[:8000])
-                except Exception:
-                    pass
-            if ctx_parts:
-                payload["research_context"] = "\n\n".join(ctx_parts)
-        except Exception:
-            pass
+    # Build the user-side payload exactly as requested
+    payload = _build_payload_for_prompt(portfolio, cash)
 
-    # Optional: load a guidance prompt with preferences and order spec details
-    guidance_path = os.getenv("GUIDANCE_FILE") or str(_project_root() / "templates" / "guidance.txt")
-    try:
-        with open(guidance_path, "r", encoding="utf-8") as fh:
-            payload["guidance"] = fh.read().strip()
-    except Exception:
-        pass
+    # Call the saved Platform Prompt (no local dev/system text)
+    model_json = _call_deep_research_via_prompt_id(payload)
 
-    model_json = _call_openai_strict(payload)
+    # Normalize, merge with existing queue, and write
     new_orders = _normalize_orders(model_json, cash)
 
-    # Merge with existing queue, clean, and coalesce duplicates
     qpath = _orders_path()
     existing = _read_json(qpath)
     if not isinstance(existing, list):
         existing = []
-    # Remove final states from existing to keep queue tidy
+
+    # Keep already-sent orders; coalesce pending + new
     carry: List[Dict[str, Any]] = []
     pending_existing: List[Dict[str, Any]] = []
     for it in existing:
@@ -323,20 +352,17 @@ def main() -> None:
             continue
         status = _norm_status(it.get("status"))
         if _is_final_status(status):
-            # drop filled/cancelled
             continue
-        # Keep items that were already sent to broker (have order_id)
         if it.get("order_id"):
             carry.append(it)
         else:
             pending_existing.append(it)
 
-    # Coalesce all pending intents (existing + new)
     pending_merged = _coalesce_pending(pending_existing + new_orders)
     merged = carry + pending_merged
     _write_json(qpath, merged)
 
-    # Email full merged queue for complete visibility
+    # Email full merged queue for visibility
     lines = ["Merged Orders Queue (next_open):"]
     for o in merged:
         lp = f" @ {o['limit_price']}" if o.get("limit_price") else ""
@@ -353,72 +379,33 @@ def main() -> None:
     for line in lines:
         print(line)
 
-
+# ----------------------------
+# CLI helpers
+# ----------------------------
 if __name__ == "__main__":
-    # Lightweight config inspection without triggering an API call
+    # Lightweight inspection without triggering an API call
     if "--print-model" in sys.argv or "--config" in sys.argv:
-        name, base = _resolve_model_and_base()
-        print(f"Model: {name}")
-        if base:
-            print(f"Base URL: {base}")
+        load_dotenv()
+        pid = os.getenv("DEEP_RESEARCH_PROMPT_ID") or "<unset>"
+        pver = os.getenv("DEEP_RESEARCH_PROMPT_VERSION") or "latest"
+        print(f"Using saved Platform Prompt: {pid} (version: {pver})")
+        print("Model: (prompt's saved model)")  # we intentionally defer to Platform
         sys.exit(0)
-    if "--print-prompt" in sys.argv:
-        prompt_path = os.getenv("EOD_SYSTEM_PROMPT_FILE") or str(_project_root() / "templates" / "eod_system.txt")
-        try:
-            print(Path(prompt_path).read_text(encoding="utf-8"))
-        except Exception as exc:
-            print(f"Could not read prompt at {prompt_path}: {exc}")
-        sys.exit(0)
+
     if "--print-reasoning" in sys.argv:
-        name, _ = _resolve_model_and_base()
         effort = (os.getenv("LLM_REASONING") or "high").strip().lower()
-        print(f"Model: {name}")
         print(f"Reasoning: {effort}")
         sys.exit(0)
-    if "--print-guidance" in sys.argv:
-        gpath = os.getenv("GUIDANCE_FILE") or str(_project_root() / "templates" / "guidance.txt")
-        try:
-            print(Path(gpath).read_text(encoding="utf-8"))
-        except Exception as exc:
-            print(f"Could not read guidance at {gpath}: {exc}")
-        sys.exit(0)
+
     if "--dry-run" in sys.argv:
-        # Build the SAME payload as main() (no API call) and print it fully
         syo = _start_your_own_dir()
         portfolio_csv = syo / "chatgpt_portfolio_update.csv"
         portfolio, cash = load_latest_portfolio_state(str(portfolio_csv))
-        payload = {
-            "portfolio": portfolio,
-            "cash": cash,
-            "instruction": "Return ONLY JSON per schema with your buy/sell for next_open.",
-        }
-        # Optional research context
-        research_dir = os.getenv("RESEARCH_DIR")
-        if research_dir:
-            try:
-                ctx_parts: List[str] = []
-                p = Path(research_dir)
-                for fp in sorted(p.glob("**/*.md"))[:20]:
-                    try:
-                        ctx_parts.append(fp.read_text(encoding="utf-8")[:8000])
-                    except Exception:
-                        pass
-                if ctx_parts:
-                    payload["research_context"] = "\n\n".join(ctx_parts)
-            except Exception:
-                pass
-        # Guidance text
-        guidance_path = os.getenv("GUIDANCE_FILE") or str(_project_root() / "templates" / "guidance.txt")
-        try:
-            with open(guidance_path, "r", encoding="utf-8") as fh:
-                payload["guidance"] = fh.read().strip()
-        except Exception:
-            pass
-        print(json.dumps(payload))
+        payload = _build_payload_for_prompt(portfolio, cash)
+        print(json.dumps(payload, indent=2))
         sys.exit(0)
+
     try:
         main()
     except KeyboardInterrupt:
         sys.exit(130)
-
-
