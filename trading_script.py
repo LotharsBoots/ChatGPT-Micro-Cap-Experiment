@@ -66,7 +66,7 @@ def _effective_now() -> datetime:
 # Globals / file locations
 # ------------------------------
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR  # Save files alongside this script by default
+DATA_DIR = SCRIPT_DIR / "Start Your Own"  # Default all data to Start Your Own
 PORTFOLIO_CSV = DATA_DIR / "chatgpt_portfolio_update.csv"
 TRADE_LOG_CSV = DATA_DIR / "chatgpt_trade_log.csv"
 DEFAULT_BENCHMARKS = ["IWO", "XBI", "SPY", "IWM"]
@@ -1447,8 +1447,13 @@ def main(file: str, data_dir: Path | None = None) -> None:
     """Check versions, then run the trading script."""
     chatgpt_portfolio, cash = load_latest_portfolio_state(file)
     print(file)
-    if data_dir is not None:
-        set_data_dir(data_dir)
+    # If no explicit data_dir provided, default to directory of the file path
+    if data_dir is None:
+        try:
+            data_dir = Path(file).resolve().parent
+        except Exception:
+            data_dir = SCRIPT_DIR
+    set_data_dir(data_dir)
 
     # ---- Day-1 friendly starting cash prompt (CLI only) ----
     try:

@@ -12,7 +12,7 @@ from trading_script import main#, set_asof
 
 
 if __name__ == "__main__":
-    data_dir = Path(__file__).resolve().parent
-    main("Scripts and CSV Files/chatgpt_portfolio_update.csv", Path("Scripts and CSV Files"))
+    data_dir = Path(__file__).resolve().parents[1] / "Start Your Own"
+    main(str(data_dir / "chatgpt_portfolio_update.csv"), data_dir)
 
 

@@ -2,7 +2,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import yfinance as yf
 
-DATA_DIR = "Scripts and CSV Files"
+from pathlib import Path
+DATA_DIR = str(Path(__file__).resolve().parents[1] / "Start Your Own")
 PORTFOLIO_CSV = f"{DATA_DIR}/chatgpt_portfolio_update.csv"
 
 

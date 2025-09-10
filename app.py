@@ -102,7 +102,9 @@ def get_portfolio_data():
     """Get current portfolio data for display"""
     try:
         script_dir = Path(__file__).resolve().parent
-        portfolio_csv = script_dir / "chatgpt_portfolio_update.csv"
+        data_dir = script_dir / "Start Your Own"
+        set_data_dir(data_dir)
+        portfolio_csv = data_dir / "chatgpt_portfolio_update.csv"
         
         if not portfolio_csv.exists():
             return None, 0.0
@@ -117,7 +119,9 @@ def get_trading_history():
     """Get trading history for charts"""
     try:
         script_dir = Path(__file__).resolve().parent
-        portfolio_csv = script_dir / "chatgpt_portfolio_update.csv"
+        data_dir = script_dir / "Start Your Own"
+        set_data_dir(data_dir)
+        portfolio_csv = data_dir / "chatgpt_portfolio_update.csv"
         
         if not portfolio_csv.exists():
             return []
@@ -196,9 +200,10 @@ def autotrade_run():
     """Run one auto-trading pass: evaluate rules and place buys if criteria met."""
     try:
         script_dir = Path(__file__).resolve().parent
-        set_data_dir(script_dir)
+        data_dir = script_dir / "Start Your Own"
+        set_data_dir(data_dir)
 
-        portfolio_csv = script_dir / "chatgpt_portfolio_update.csv"
+        portfolio_csv = data_dir / "chatgpt_portfolio_update.csv"
         if portfolio_csv.exists():
             portfolio, cash = load_latest_portfolio_state(str(portfolio_csv))
         else:
@@ -206,7 +211,7 @@ def autotrade_run():
             cash = float(os.environ.get('STARTING_CASH', '10000'))
 
         # Run auto-buyer
-        portfolio_df, cash, executed = auto_trade_once(portfolio, cash, base_dir=script_dir)
+        portfolio_df, cash, executed = auto_trade_once(portfolio, cash, base_dir=data_dir)
 
         # Price and persist results
         portfolio_df, cash = process_portfolio(portfolio_df, cash, interactive=False)
@@ -233,7 +238,8 @@ def autotrade_ai_run():
     """Use an LLM to decide daily buys/sells based on user's prompt and recent data."""
     try:
         script_dir = Path(__file__).resolve().parent
-        set_data_dir(script_dir)
+        data_dir = script_dir / "Start Your Own"
+        set_data_dir(data_dir)
 
         cfg = read_autotrade_config()
         prompt = cfg.get('prompt') or ''
@@ -286,7 +292,7 @@ def autotrade_ai_run():
             return jsonify({'status': 'error', 'message': 'AI did not return valid JSON.'}), 500
 
         # Load current state
-        portfolio_csv = script_dir / 'chatgpt_portfolio_update.csv'
+        portfolio_csv = data_dir / 'chatgpt_portfolio_update.csv'
         if portfolio_csv.exists():
             portfolio, cash = load_latest_portfolio_state(str(portfolio_csv))
             df = pd.DataFrame(portfolio) if isinstance(portfolio, list) else portfolio.copy()
@@ -402,12 +408,13 @@ def automated_trading_worker():
         trading_status['is_running'] = True
         trading_status['error'] = None
         
-        # Set data directory to script location
+        # Set data directory to Start Your Own
         script_dir = Path(__file__).resolve().parent
-        set_data_dir(script_dir)
+        data_dir = script_dir / "Start Your Own"
+        set_data_dir(data_dir)
         
         # Load current portfolio state
-        portfolio_csv = script_dir / "chatgpt_portfolio_update.csv"
+        portfolio_csv = data_dir / "chatgpt_portfolio_update.csv"
         
         if not portfolio_csv.exists():
             # Create initial portfolio if none exists
