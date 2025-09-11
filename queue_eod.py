@@ -373,7 +373,11 @@ def main() -> None:
             f" - {str(o.get('side')).upper()} {o.get('ticker')} x{int(o.get('quantity', 0))} "
             f"{o.get('order_type')}{lp} [{status}]{oid_tag}"
         )
-    _email_mailgun("EOD orders queued (full queue)", "\n".join(lines))
+    # Optional email notification of full queue (gated via ENABLE_MAIL)
+    if (os.getenv("ENABLE_MAIL") or "").strip().lower() in {"1", "true", "yes", "on"}:
+        _email_mailgun("EOD orders queued (full queue)", "\n".join(lines))
+    else:
+        print("Email disabled (set ENABLE_MAIL=true to enable).")
 
     print("Wrote", qpath)
     for line in lines:

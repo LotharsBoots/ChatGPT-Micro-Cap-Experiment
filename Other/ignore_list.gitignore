@@ -4,7 +4,6 @@ __pycache__/
 *.pyo
 *.pyd
 .Python
-env/
 venv/
 .venv/
 .mypy_cache/
@@ -49,4 +48,4 @@ Documents/
 .idea/
 
 # === Environment Variables ===
-*.env
+

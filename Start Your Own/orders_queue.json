@@ -58,5 +58,49 @@
     "rationale": "LLM decision",
     "order_id": "b659635b-73cb-4381-982f-f2e07df0956e",
     "status": "accepted"
+  },
+  {
+    "id": "a27f7a958feaffdb",
+    "ticker": "SPY",
+    "side": "buy",
+    "quantity": 2066,
+    "order_type": "MOO",
+    "limit_price": null,
+    "validity": "next_open",
+    "rationale": "LLM decision",
+    "status": "error: insufficient qty available for order (requested: 2066, available: 1)"
+  },
+  {
+    "id": "b7ff00a721de0154",
+    "ticker": "IWM",
+    "side": "buy",
+    "quantity": 2066,
+    "order_type": "MOO",
+    "limit_price": null,
+    "validity": "next_open",
+    "rationale": "LLM decision",
+    "status": "error: insufficient qty available for order (requested: 2066, available: 2)"
+  },
+  {
+    "id": "6e10ede9b2bbd2bf",
+    "ticker": "QQQ",
+    "side": "buy",
+    "quantity": 2066,
+    "order_type": "MOO",
+    "limit_price": null,
+    "validity": "next_open",
+    "rationale": "LLM decision",
+    "status": "error: insufficient buying power"
+  },
+  {
+    "id": "76d7bf782b9d7d36",
+    "ticker": "XBI",
+    "side": "buy",
+    "quantity": 2066,
+    "order_type": "MOO",
+    "limit_price": null,
+    "validity": "next_open",
+    "rationale": "LLM decision",
+    "status": "error: insufficient qty available for order (requested: 2066, available: 1)"
   }
 ]
