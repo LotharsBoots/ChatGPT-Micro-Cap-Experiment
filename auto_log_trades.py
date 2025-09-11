@@ -8,13 +8,16 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from trading_script import main as trading_main
 
 # ---- Path to manual orders ----
-txt_file = Path(r"C:\Users\TGWol\Downloads\ChatGPT-Micro-Cap-Experiment-Auto-log-data\ChatGPT-Micro-Cap-Experiment-Auto-log-data\Start Your Own\CopyDataInto.txt")
+txt_file = Path(
+    r"C:\Users\TGWol\Downloads\ChatGPT-Micro-Cap-Experiment-Auto-log-data\ChatGPT-Micro-Cap-Experiment-Auto-log-data\Start Your Own\CopyDataInto.txt"
+)
 
 # ---- Parse orders from the .txt file ----
 def parse_orders(txt_file):
     with open(txt_file, "r", encoding="utf-8") as f:
         content = f.read()
 
+    # Split by "Order 1", "Order 2", etc.
     blocks = re.split(r"Order\s+\d+", content, flags=re.IGNORECASE)
     orders = []
 
@@ -29,48 +32,55 @@ def parse_orders(txt_file):
         orders.append(order)
     return orders
 
+# ---- Extract first numeric value only (safe) ----
+def extract_number(s, default="0"):
+    """Return the first numeric value in string s, or default if none."""
+    if not s:
+        return default
+    match = re.search(r"[-+]?\d*\.?\d+", s)
+    return match.group() if match else default
+
 # ---- Build input sequence for the trading script ----
 def build_input_sequence(orders):
     sequence = []
     for o in orders:
         action = o.get("action", "").lower()
-        ticker = o.get("ticker")
+        ticker = o.get("ticker", "").strip()
         order_type = o.get("order type", "").lower()
-        shares = o.get("shares")
-        stop_loss = o.get("stop loss", "0")
-        limit_price = o.get("limit price", "")
+        shares = o.get("shares", "").strip()
+        stop_loss = extract_number(o.get("stop loss", "0"), default="0")
+        limit_price = extract_number(o.get("limit price", "0"), default="0")
 
-        # ---- Action prompt ----
+        # ---- Action ----
         if action == "buy":
             sequence.append("b")
         elif action == "sell":
             sequence.append("s")
         else:
-            sequence.append("")
+            sequence.append("")  # default (continue)
 
         # ---- Ticker ----
         sequence.append(ticker)
 
-        # ---- Determine pathway ----
+        # ---- Pathways ----
         if action == "buy" and "market" in order_type:
-            # Buy Market-On-Open pathway
-            sequence.append("m")               # order type
-            sequence.append(str(shares))       # number of shares
-            stop_val = re.search(r"[-+]?\d*\.?\d+", stop_loss)
-            sequence.append(stop_val.group() if stop_val else "0")
+            # Buy Market-On-Open
+            sequence.append("m")
+            sequence.append(shares if shares else "0")
+            sequence.append(stop_loss)
         elif action == "buy" and "limit" in order_type:
-            # Buy Limit pathway
-            sequence.append("l")               # order type
-            sequence.append(str(shares))       # number of shares
-            sequence.append(limit_price)       # buy limit price
-            stop_val = re.search(r"[-+]?\d*\.?\d+", stop_loss)
-            sequence.append(stop_val.group() if stop_val else "0")
-            sequence.append("")                # final confirmation (press enter)
+            # Buy Limit
+            sequence.append("l")
+            sequence.append(shares if shares else "0")
+            sequence.append(limit_price)
+            sequence.append(stop_loss)
+            sequence.append("")  # confirmation (press enter)
         elif action == "sell":
-            # Sell pathway
-            sequence.append(str(shares))       # number of shares to sell
-            sequence.append(limit_price)       # sell limit price
-            sequence.append("")                # final confirmation (press enter)
+            # Sell Limit
+            sequence.append(shares if shares else "0")
+            sequence.append(limit_price)
+            sequence.append("")  # confirmation (press enter)
+
     return sequence
 
 # ---- Patch input() ----
@@ -90,10 +100,10 @@ class InputPatcher:
     def mock_input(self, prompt=""):
         if self.index < len(self.responses):
             response = self.responses[self.index]
-            print(prompt + response)  # show what the script "types"
+            print(prompt + response)  # echo simulated input
             self.index += 1
             return response
-        return ""  # default empty if run out of responses
+        return ""  # fallback if we run out
 
 # ---- Main execution ----
 def main():
@@ -104,7 +114,6 @@ def main():
 
     input_sequence = build_input_sequence(orders)
     with InputPatcher(input_sequence):
-        # Run the trading script
         data_dir = Path(__file__).resolve().parent / "Start Your Own"
         trading_main(str(data_dir / "chatgpt_portfolio_update.csv"), data_dir)
 
