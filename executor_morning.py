@@ -23,6 +23,8 @@ from adapters.adapter import BrokerAdapter
 from trading_script import (
     set_data_dir,
     load_latest_portfolio_state,
+)
+from script_portfolio_input import (
     log_manual_buy,
     log_manual_sell,
 )

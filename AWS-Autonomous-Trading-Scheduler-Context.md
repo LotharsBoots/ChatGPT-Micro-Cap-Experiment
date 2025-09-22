@@ -26,6 +26,30 @@ Fully autonomous, no-UI system that:
 No UI or endpoints; scheduled container runs that read → process → write.
 
 ---
+## Quick Start (Zero Context)
+
+1) One-time Day‑1 init (manual)
+   - ECS → Clusters → `microcap-cluster` → Run new task
+   - Task definition: `microcap-day-one` (latest), Launch type: FARGATE, Platform: LATEST
+   - Container overrides → Environment → add `STARTING_CASH = <your amount>` (e.g., 3500)
+   - Networking: default VPC, any two default subnets, default security group, Public IP = Enabled → Run task
+   - Logs: CloudWatch `/ecs/microcap` prefix `day-one/`
+   - Idempotent: if positions already exist, it logs “already initialized” and exits.
+
+2) Autonomous schedules (no clicks after Day‑1)
+   - Mon–Thu 4:00 PM ET: `microcap-queue-daily` → writes/merges `orders_queue.json`
+   - Fri 4:00 PM ET: `microcap-queue-eod` → deep research merge
+   - Weekdays 9:25 AM ET: `microcap-executor-morning` → submits OPG and updates CSVs
+
+3) Where to look
+   - S3 state: `s3://microcap-shared-state-780372467371/Start Your Own/`
+   - Logs: CloudWatch group `/ecs/microcap` with prefixes `queue-daily`, `eod`, `executor`, `day-one`
+   - Delivery failures: SQS `microcap-scheduler-dlq`
+
+4) Reset to Day‑1 (optional)
+   - Use the “Reset to Day‑1 (Archive + Rerun)” block in this doc (archives S3 state, clears it, prompts for `STARTING_CASH`, and runs Day‑1).
+
+---
 
 ## Cloud Architecture (AWS)
 
@@ -94,6 +118,75 @@ No UI or endpoints; scheduled container runs that read → process → write.
 
 ---
 
+## Current Deployment (verified, bones only)
+
+- Container image
+  - ECR: `780372467371.dkr.ecr.us-east-1.amazonaws.com/microcap:latest`
+- Compute
+  - ECS Fargate cluster: `microcap-cluster`
+  - Task Definitions (active)
+    - `microcap-queue-daily` (rev 7) – includes `DAILY_PROMPT_ID`
+    - `microcap-queue-eod` (rev 5) – includes `DEEP_RESEARCH_PROMPT_ID`
+    - `microcap-executor-morning` (rev 1)
+  - Networking: default VPC, two subnets, default security group, Public IP enabled
+- Storage (shared state)
+  - S3: `microcap-shared-state-780372467371/Start Your Own/`
+  - Files: `orders_queue.json`, `chatgpt_trade_log.csv`, `chatgpt_portfolio_update.csv`
+- Secrets (per-key secrets)
+  - `microcap/openai-api-key`, `microcap/alpaca-base-url`, `microcap/alpaca-key-id`, `microcap/alpaca-secret-key`
+  - Execution role `microcap-execution-role` allowed `secretsmanager:GetSecretValue` for those ARNs
+- Scheduler (EventBridge, America/New_York)
+  - `microcap-queue-daily`: cron(0 16 ? * MON-THU *)
+  - `microcap-queue-eod`:   cron(0 16 ? * FRI *)
+  - `microcap-executor-morning`: cron(25 9 ? * MON-FRI *)
+  - Retry: 3 attempts; Max event age: 2 hours; Targets use latest task rev
+  - DLQ attached: `arn:aws:sqs:us-east-1:780372467371:microcap-scheduler-dlq`
+- Logs
+  - CloudWatch group `/ecs/microcap` with prefixes `queue-daily`, `eod`, `executor`, `day-one`
+
+
+---
+## Durability & Retention (optional but helpful)
+
+- CloudWatch Logs
+  - The group `/ecs/microcap` can be left as “Never expire” for full history, or you can set a retention policy.
+  - Example CLI to set 30‑day retention:
+    - `aws logs put-retention-policy --log-group-name /ecs/microcap --retention-in-days 30`
+
+- S3 State History (keep every update)
+  - Enable Versioning on the state bucket to retain all historical versions of files under `Start Your Own/`:
+    - `aws s3api put-bucket-versioning --bucket microcap-shared-state-780372467371 --versioning-configuration Status=Enabled`
+    - Verify: `aws s3api get-bucket-versioning --bucket microcap-shared-state-780372467371`
+  - Optional lifecycle to tier older versions (no delete), example skeleton:
+    ```json
+    {
+      "Rules": [
+        {
+          "ID": "tier-old-versions",
+          "Status": "Enabled",
+          "NoncurrentVersionTransitions": [
+            {"NoncurrentDays": 30, "StorageClass": "GLACIER"}
+          ]
+        }
+      ]
+    }
+    ```
+    - Apply: `aws s3api put-bucket-lifecycle-configuration --bucket microcap-shared-state-780372467371 --lifecycle-configuration file://lifecycle.json`
+
+---
+## Image Pinning (optional – release safety)
+
+Tasks presently point to `:latest`. To pin a release:
+1) Tag/push a version:
+```
+docker tag microcap:latest 780372467371.dkr.ecr.us-east-1.amazonaws.com/microcap:v1.0.0
+docker push 780372467371.dkr.ecr.us-east-1.amazonaws.com/microcap:v1.0.0
+```
+2) Update task definitions to `.../microcap:v1.0.0` and re‑register.
+3) Keep “Use latest revision” ON in schedules so new revisions take effect automatically.
+
+---
+
 ## Data Flow (End-to-End)
 
 1) Mon–Thu 4:00 PM ET (`microcap-queue-daily`)
@@ -113,6 +206,7 @@ No UI or endpoints; scheduled container runs that read → process → write.
    - Run `executor_morning.py` (submits OPG orders)
    - Update `chatgpt_trade_log.csv` and `chatgpt_portfolio_update.csv`
    - Sync local → S3
+   - Outside OPG window (ET 7:00pm–9:28am) executor logs a skip and leaves queue intact
 
 Idempotency:
 - “accepted” items with `order_id` won’t re-submit.
@@ -138,10 +232,14 @@ Idempotency:
 ---
 
 ## Secrets ValueFrom ARN Format (critical)
-- Use your exact secret ARN with JSON key and trailing `::`, e.g.:
-  - `arn:aws:secretsmanager:us-east-1:<ACCOUNT_ID>:secret:microcap/runtime-env-XXXX:OPENAI_API_KEY::`
-  - Repeat for `ALPACA_BASE_URL`, `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`
-- Task role must allow `secretsmanager:GetSecretValue` on `...:microcap/runtime-env-XXXX*`
+- Preferred (current): one secret per key; reference ARN directly (no `:KEY::` suffix):
+  - `valueFrom = arn:aws:secretsmanager:us-east-1:<ACCOUNT_ID>:secret:microcap/openai-api-key-XXXX`
+  - `valueFrom = arn:aws:secretsmanager:us-east-1:<ACCOUNT_ID>:secret:microcap/alpaca-base-url-XXXX`
+  - `valueFrom = arn:aws:secretsmanager:us-east-1:<ACCOUNT_ID>:secret:microcap/alpaca-key-id-XXXX`
+  - `valueFrom = arn:aws:secretsmanager:us-east-1:<ACCOUNT_ID>:secret:microcap/alpaca-secret-key-XXXX`
+  - Execution role must allow `secretsmanager:GetSecretValue` for those ARNs
+
+  Alternative (supported): single JSON secret with `...:KEY::` suffixes on `valueFrom`.
 
 ---
 
