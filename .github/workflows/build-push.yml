@@ -1,0 +1,29 @@
+name: build-push
+on:
+  push:
+    branches: [ API-Brokerage ]
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REPO: ${{ vars.ECR_REPO }}
+  IMAGE: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPO }}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - run: aws ecr describe-repositories --repository-names "$ECR_REPO" || aws ecr create-repository --repository-name "$ECR_REPO"
+      - run: aws ecr get-login-password | docker login --username AWS --password-stdin "$IMAGE"
+      - run: |
+          docker build -t "$IMAGE:latest" .
+          docker push "$IMAGE:latest"
+
+
