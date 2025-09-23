@@ -32,6 +32,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh workflow run run-day-one.yml -f STARTING_CASH=${{ inputs.STARTING_CASH }}
+          gh workflow run run-day-one.yml -R "$GITHUB_REPOSITORY" -r "API-Brokerage" -f STARTING_CASH=${{ inputs.STARTING_CASH }}
 
 
