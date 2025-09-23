@@ -17,6 +17,12 @@ import os
 import sys
 
 from dotenv import load_dotenv
+import os
+from datetime import date
+try:
+    from alpaca_trade_api import REST as ALPACA_REST  # type: ignore
+except Exception:  # pragma: no cover - optional import guard
+    ALPACA_REST = None  # type: ignore
 
 from trading_script import (
     load_latest_portfolio_state,
@@ -36,6 +42,25 @@ from queue_eod import (
     _email_mailgun,       # type: ignore
 )
 
+
+def _is_market_open_today() -> bool:
+    """Return True if Alpaca calendar indicates today is a trading day.
+
+    Fails open: on any error/missing creds, returns True to avoid blocking.
+    """
+    try:
+        load_dotenv()
+        base_url = os.getenv("ALPACA_BASE_URL")
+        key = os.getenv("ALPACA_KEY_ID")
+        secret = os.getenv("ALPACA_SECRET_KEY")
+        if not all([base_url, key, secret]) or ALPACA_REST is None:
+            return True
+        api = ALPACA_REST(key, secret, base_url)
+        today_iso = date.today().isoformat()
+        cal = api.get_calendar(start=today_iso, end=today_iso)
+        return bool(cal)
+    except Exception:
+        return True
 
 def _extract_holdings(portfolio: Any) -> List[Dict[str, Any]]:
     """Derive a simple holdings list [{ticker, shares}] from generic portfolio rows."""
@@ -138,6 +163,10 @@ def _build_daily_payload(portfolio: Any, cash: float) -> Dict[str, Any]:
 
 
 def main() -> None:
+    if not _is_market_open_today():
+        print("Market closed/holiday per Alpaca calendar. Skipping daily queue.")
+        return
+
     syo = _start_your_own_dir()
     set_data_dir(syo)
 

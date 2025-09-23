@@ -19,6 +19,12 @@ import re
 import sys
 from datetime import datetime, UTC
 from dotenv import load_dotenv
+import os
+from datetime import date
+try:
+    from alpaca_trade_api import REST as ALPACA_REST  # type: ignore
+except Exception:  # pragma: no cover - optional import guard
+    ALPACA_REST = None  # type: ignore
 
 
 from trading_script import (
@@ -276,6 +282,25 @@ CONSTANT_INSTRUCTIONS = (
     "immediately after this message, then the portfolio remains unchanged for tomorrow."
 )
 
+def _is_market_open_today() -> bool:
+    """Return True if Alpaca calendar indicates today is a trading day.
+
+    Fails open: on any error/missing creds, returns True to avoid blocking.
+    """
+    try:
+        load_dotenv()
+        base_url = os.getenv("ALPACA_BASE_URL")
+        key = os.getenv("ALPACA_KEY_ID")
+        secret = os.getenv("ALPACA_SECRET_KEY")
+        if not all([base_url, key, secret]) or ALPACA_REST is None:
+            return True
+        api = ALPACA_REST(key, secret, base_url)
+        today_iso = date.today().isoformat()
+        cal = api.get_calendar(start=today_iso, end=today_iso)
+        return bool(cal)
+    except Exception:
+        return True
+
 def _build_payload_for_prompt(portfolio: Any, cash: float) -> Dict[str, Any]:
     """Build the exact user-side payload your Prompt expects."""
     load_dotenv()
@@ -322,6 +347,10 @@ def _build_payload_for_prompt(portfolio: Any, cash: float) -> Dict[str, Any]:
     return payload
 
 def main() -> None:
+    if not _is_market_open_today():
+        print("Market closed/holiday per Alpaca calendar. Skipping EOD queue.")
+        return
+
     root = _project_root()
     syo = _start_your_own_dir()
     set_data_dir(syo)
