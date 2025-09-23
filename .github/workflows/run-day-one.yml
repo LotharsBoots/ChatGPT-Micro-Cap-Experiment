@@ -24,7 +24,14 @@ jobs:
       - id: td
         shell: bash
         run: |
-          arn=$(aws ecs list-task-definitions --family-prefix "$TASK_FAMILY_DAY_ONE" --sort DESC --max-items 1 --query 'taskDefinitionArns[0]' --output text)
+          arn=$(aws ecs list-task-definitions --family-prefix "$TASK_FAMILY_DAY_ONE" --sort DESC --max-items 20 --query 'taskDefinitionArns[0]' --output text 2>/dev/null || true)
+          if [ -z "$arn" ] || [ "$arn" = "None" ] || [ "$arn" = "null" ]; then
+            arn=$(aws ecs describe-task-definition --task-definition "$TASK_FAMILY_DAY_ONE" --query 'taskDefinition.taskDefinitionArn' --output text 2>/dev/null || true)
+          fi
+          if [ -z "$arn" ] || [ "$arn" = "None" ] || [ "$arn" = "null" ]; then
+            echo "No task definition found for family $TASK_FAMILY_DAY_ONE" >&2
+            exit 1
+          fi
           echo "td_arn=$arn" >> $GITHUB_OUTPUT
       - id: net
         shell: bash
