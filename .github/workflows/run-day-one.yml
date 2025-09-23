@@ -1,0 +1,47 @@
+name: run-day-one
+on:
+  workflow_dispatch:
+    inputs:
+      STARTING_CASH:
+        description: "Starting cash (e.g., 3500)"
+        required: true
+        type: string
+permissions:
+  id-token: write
+  contents: read
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  TASK_FAMILY_DAY_ONE: ${{ vars.TASK_FAMILY_DAY_ONE }}
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - id: td
+        shell: bash
+        run: |
+          arn=$(aws ecs list-task-definitions --family-prefix "$TASK_FAMILY_DAY_ONE" --sort DESC --max-items 1 --query 'taskDefinitionArns[0]' --output text)
+          echo "td_arn=$arn" >> $GITHUB_OUTPUT
+      - id: net
+        shell: bash
+        run: |
+          vpc=$(aws ec2 describe-vpcs --filters Name=isDefault,Values=true --query 'Vpcs[0].VpcId' --output text)
+          subnets=$(aws ec2 describe-subnets --filters Name=vpc-id,Values=$vpc --query 'Subnets[].SubnetId' --output text)
+          s1=$(echo $subnets | awk '{print $1}')
+          s2=$(echo $subnets | awk '{print $2}')
+          sg=$(aws ec2 describe-security-groups --filters Name=vpc-id,Values=$vpc Name=group-name,Values=default --query 'SecurityGroups[0].GroupId' --output text)
+          echo "s1=$s1" >> $GITHUB_OUTPUT
+          echo "s2=$s2" >> $GITHUB_OUTPUT
+          echo "sg=$sg" >> $GITHUB_OUTPUT
+      - name: Run Day-1 task
+        shell: bash
+        run: |
+          overrides='{"containerOverrides":[{"name":"app","environment":[{"name":"STARTING_CASH","value":"${{ inputs.STARTING_CASH }}"}]}]}'
+          netcfg="awsvpcConfiguration={subnets=[$(printf '\"%s\",\"%s\"' ${{ steps.net.outputs.s1 }} ${{ steps.net.outputs.s2 }})],securityGroups=[\"${{ steps.net.outputs.sg }}\"],assignPublicIp=\"ENABLED\"}"
+          aws ecs run-task --cluster "$ECS_CLUSTER" --launch-type FARGATE --task-definition "${{ steps.td.outputs.td_arn }}" --overrides "$overrides" --network-configuration "$netcfg"
+
+
