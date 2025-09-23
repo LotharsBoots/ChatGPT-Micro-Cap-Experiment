@@ -1,0 +1,37 @@
+name: reset-day-one
+on:
+  workflow_dispatch:
+    inputs:
+      STARTING_CASH:
+        description: "Starting cash after reset"
+        required: true
+        type: string
+permissions:
+  id-token: write
+  contents: read
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  BUCKET: microcap-shared-state-780372467371
+  PREFIX: "Start Your Own"
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Archive and clear
+        shell: bash
+        run: |
+          stamp=$(date +%Y%m%d-%H%M%S)
+          aws s3 sync "s3://$BUCKET/$PREFIX" "s3://$BUCKET/Archive/day-one-$stamp/"
+          aws s3 rm "s3://$BUCKET/$PREFIX" --recursive
+      - name: Trigger Day-1
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run run-day-one.yml -f STARTING_CASH=${{ inputs.STARTING_CASH }}
+
+
