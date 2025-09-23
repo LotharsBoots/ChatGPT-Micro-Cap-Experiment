@@ -10,8 +10,6 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION }}
   AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
   ECR_REPO: ${{ vars.ECR_REPO }}
-  REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
-  IMAGE: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ vars.ECR_REPO }}
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,6 +19,13 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
           aws-region: ${{ env.AWS_REGION }}
+      - name: Compute ECR variables
+        shell: bash
+        run: |
+          REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+          REGISTRY="${REGISTRY//$'\r'/}"
+          echo "REGISTRY=$REGISTRY" >> $GITHUB_ENV
+          echo "IMAGE=$REGISTRY/${ECR_REPO}" >> $GITHUB_ENV
       - run: aws ecr describe-repositories --repository-names "$ECR_REPO" || aws ecr create-repository --repository-name "$ECR_REPO"
       - run: aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
       - run: |
