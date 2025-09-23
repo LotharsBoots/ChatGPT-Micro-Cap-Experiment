@@ -211,3 +211,19 @@ jobs:
 - Task stops before logs → likely Secrets permission/ARN format; verify execution role and ARNs.
 - No S3 writes → check task role S3 perms and bucket/prefix.
 - Executor says “Outside OPG window” → expected when run outside ET 7:00pm–9:28am.
+
+---
+
+## Recent Enhancements & Notes (Sep 2025)
+
+- GitHub OIDC role in AWS with trust restricted to repo/branch; repo variables and secret configured.
+- Workflows:
+  - `build-push`: builds image and pushes to ECR on branch `API-Brokerage`. Docker login must use REGISTRY host `${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com` (not the full IMAGE path). If needed, compute REGISTRY in a step and strip CRLF before login.
+  - `run-day-one`: manual, finds latest Day‑1 task‑def and runs Fargate after resolving default VPC/subnets/SG; input `STARTING_CASH`.
+  - `reset-day-one`: archives S3 `Start Your Own/` to `Archive/day-one-<timestamp>/`, clears it, then dispatches `run-day-one`. Requires workflow `permissions: actions: write`.
+- ECS task definition added: `microcap-day-one` (runs `python day_one_bootstrap.py` with S3 sync in/out).
+- IAM additions for workflows:
+  - EC2 Describe VPC/Subnets/SG (read-only) for Day‑1 network lookup.
+  - S3 RW on `Start Your Own/*` and `Archive/*` for reset.
+
+Planned: add Alpaca market‑clock gating to daily/EOD so they skip on holidays/closed market (executor already OPG‑gated).

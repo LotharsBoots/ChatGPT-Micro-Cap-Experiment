@@ -372,3 +372,64 @@ Idempotency:
 - 9:25 AM ET executor submits OPG; CSVs update in S3
 - Transient failures retried; persistent failures end in DLQ and (after alerts) notify you
 - No manual PC involvement; secrets in Secrets Manager; logs in CloudWatch
+
+---
+
+## Recent Enhancements (Sep 2025)
+
+- GitHub OIDC role created: `microcap-github-oidc-role` (trust restricted to repo `LotharsBoots/ChatGPT-Micro-Cap-Experiment`, branch `API-Brokerage`).
+- GitHub Actions workflows in repo:
+  - `build-push`: builds Docker image and pushes to ECR on `API-Brokerage` (and manual dispatch). Docker login targets the ECR REGISTRY host; image is pushed as `:latest`.
+  - `run-day-one`: manually runs Day‑1 with `STARTING_CASH`, finds latest `microcap-day-one` task‑def, detects default VPC/subnets/SG, and runs one Fargate task.
+  - `reset-day-one`: archives S3 `Start Your Own/` to `Archive/day-one-<timestamp>/`, clears it, then dispatches `run-day-one` automatically.
+- ECS task definition `microcap-day-one` added:
+  - Image: `780372467371.dkr.ecr.us-east-1.amazonaws.com/microcap:latest`
+  - Command: `sh -lc "aws s3 sync s3://$BUCKET/Start Your Own 'Start Your Own' && python day_one_bootstrap.py && aws s3 sync 'Start Your Own' s3://$BUCKET/Start Your Own"`
+  - Env: `BUCKET=microcap-shared-state-780372467371`
+- IAM (tight additions for workflows):
+  - EC2 Describe read‑only for VPC/Subnets/SecurityGroups (Day‑1 workflow network discovery).
+  - S3 RW on `Start Your Own/*` and `Archive/*` plus ListBucket with prefix (reset workflow).
+  - GitHub Actions permission `actions: write` on reset workflow to allow dispatching `run-day-one`.
+
+---
+
+## Holiday / Market‑Clock Gating (Planned)
+
+- Daily (`queue_daily.py`) and EOD (`queue_eod.py`) will pre‑check the Alpaca market clock and exit 0 with a clear log when the market is closed/holiday.
+- Executor already gates to Alpaca OPG window (ET 7:00pm–9:28am).
+- Outcome: no prompts or S3 writes on holidays; schedules still run and log a skip.
+
+---
+
+## GitHub Actions Details (Variables / Permissions)
+
+- Repository Variables required:
+  - `AWS_REGION=us-east-1`, `AWS_ACCOUNT_ID=780372467371`, `ECR_REPO=microcap`, `ECS_CLUSTER=microcap-cluster`, `TASK_FAMILY_DAY_ONE=microcap-day-one`
+- Repository Secret:
+  - `AWS_ROLE_TO_ASSUME` = IAM role ARN for OIDC (above)
+- Build notes:
+  - Use REGISTRY host for docker login (not image path). Example: `${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com`
+  - If newline/CR sneaks in from variables, compute REGISTRY in a step and strip `\r`, then export via `$GITHUB_ENV`.
+- Reset workflow note:
+  - Needs `permissions: actions: write` to dispatch `run-day-one` with `gh workflow run`.
+
+---
+
+## Ops Cheatsheet (Quick Verification)
+
+- List S3 archives:
+  - `aws s3 ls s3://microcap-shared-state-780372467371/Archive/`
+- Check fresh CSV timestamps (no download):
+  - `aws s3api head-object --bucket microcap-shared-state-780372467371 --key "Start Your Own/chatgpt_portfolio_update.csv" --query LastModified --output text`
+  - `aws s3api head-object --bucket microcap-shared-state-780372467371 --key "Start Your Own/chatgpt_trade_log.csv" --query LastModified --output text`
+- Read orders queue inline:
+  - `aws s3 cp "s3://microcap-shared-state-780372467371/Start Your Own/orders_queue.json" -`
+
+---
+
+## Known Pitfalls (and fixes)
+
+- Docker login failing with malformed URL: login to REGISTRY host, not IMAGE; compute REGISTRY in a step and strip CRLF before `docker login`.
+- `UnauthorizedOperation` in Day‑1 workflow while describing VPC/Subnets/SG: attach EC2 Describe read perms to the OIDC role.
+- Reset workflow cannot trigger Day‑1 (`403 Resource not accessible by integration`): add `permissions: actions: write` in the workflow.
+- New Python files added but ECS container can’t import them: re‑run `build-push` so ECR `:latest` includes the changes.
