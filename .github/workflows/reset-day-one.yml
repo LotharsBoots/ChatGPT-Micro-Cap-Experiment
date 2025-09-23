@@ -9,6 +9,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  actions: write
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
   BUCKET: microcap-shared-state-780372467371
