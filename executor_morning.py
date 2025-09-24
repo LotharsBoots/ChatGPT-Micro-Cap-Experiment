@@ -1,8 +1,8 @@
-"""Morning executor: submit queued orders at the open and update CSVs.
+"""Morning executor: submit queued orders at the opening and update CSVs.
 
-Reads Start Your Own\orders_queue.json, maps MOO/LOO to Alpaca OPG orders,
-submits them, polls for fills for a short window, then writes executions to
-Start Your Own CSVs using existing helpers from trading_script.
+Reads Start Your Own\orders_queue.json, submits MARKET/LIMIT (DAY) orders
+in a tight 09:30:00 ET window (configurable), polls fills for ~10 minutes,
+then writes executions to Start Your Own CSVs using trading_script helpers.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ import time
 
 from dotenv import load_dotenv
 import pytz
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from adapters.alpaca import AlpacaAdapter
+from adapters.schwab import SchwabAdapter
 from adapters.adapter import BrokerAdapter
 from trading_script import (
     set_data_dir,
@@ -28,22 +28,14 @@ from script_portfolio_input import (
     log_manual_buy,
     log_manual_sell,
 )
-
-
-def _root() -> Path:
-    return Path(__file__).resolve().parent
-
-
-def _syo() -> Path:
-    return _root() / "Start Your Own"
-
-
-def _orders_path() -> Path:
-    return _syo() / "orders_queue.json"
+# Paths
+ROOT = Path(__file__).resolve().parent
+START_YOUR_OWN = ROOT / "Start Your Own"
+ORDERS_PATH = START_YOUR_OWN / "orders_queue.json"
 
 
 def _read_queue() -> List[Dict[str, Any]]:
-    p = _orders_path()
+    p = ORDERS_PATH
     try:
         with p.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -53,20 +45,72 @@ def _read_queue() -> List[Dict[str, Any]]:
 
 
 def _write_queue(data: List[Dict[str, Any]]) -> None:
-    p = _orders_path()
+    p = ORDERS_PATH
     tmp = p.with_suffix(p.suffix + ".tmp")
     with tmp.open("w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
     os.replace(tmp, p)
 
 
+def _ensure_portfolio_csv() -> Path:
+    """Ensure Start Your Own/chatgpt_portfolio_update.csv exists inside the container.
+
+    If missing, try to seed it from the repository copy under
+    "Scripts and CSV Files/chatgpt_portfolio_update.csv".
+    """
+    syo = START_YOUR_OWN
+    syo.mkdir(parents=True, exist_ok=True)
+    dst = syo / "chatgpt_portfolio_update.csv"
+    if dst.exists():
+        return dst
+    # Try common source locations inside the image
+    candidates = [
+        ROOT / "Scripts and CSV Files" / "chatgpt_portfolio_update.csv",
+        ROOT / "Start Your Own" / "chatgpt_portfolio_update.csv",
+    ]
+    for c in candidates:
+        try:
+            if c.exists():
+                dst.write_text(c.read_text(encoding="utf-8"), encoding="utf-8")
+                print("Seeded portfolio CSV from", str(c))
+                return dst
+        except Exception:
+            pass
+    # If we couldn't seed, create an empty CSV with expected headers so
+    # downstream code treats it as empty portfolio and initializes cash.
+    try:
+        headers = [
+            "Date",
+            "Ticker",
+            "Shares",
+            "Buy Price",
+            "Stop Loss",
+            "Cost Basis",
+            "Cash Balance",
+            "Total Equity",
+            "Action",
+            "Current Price",
+            "PnL",
+            "Total Value",
+        ]
+        dst.write_text(
+            ",".join(headers) + "\n",
+            encoding="utf-8",
+        )
+        print("Initialized empty portfolio CSV at", str(dst))
+    except Exception:
+        pass
+    return dst
+
+
 def _select_adapter() -> BrokerAdapter:
-    # For Phase 1 we only support Alpaca; broker switch comes later via config
-    return AlpacaAdapter()
+    # Switch to Schwab-only mode per configuration
+    return SchwabAdapter()
 
 
 def _submit_one(adapter: BrokerAdapter, o: Dict[str, Any]) -> Dict[str, Any]:
-    tif = "opg"  # opening auction
+    # For Schwab: submit DAY orders during the opening window
+    tif = "day"
     if o.get("order_type") == "MOO":
         order = {
             "ticker": o["ticker"],
@@ -88,34 +132,51 @@ def _submit_one(adapter: BrokerAdapter, o: Dict[str, Any]) -> Dict[str, Any]:
     return adapter.submit_order(order)
 
 
-def _is_opg_window_now() -> bool:
-    """Return True if current US/Eastern time is within Alpaca OPG window.
-
-    Alpaca accepts OPG orders between 7:00pm and 9:28am ET.
-    We treat the window as:
-      - (19:00:00 <= time < 24:00:00) OR (00:00:00 <= time <= 09:28:00)
-    """
+def _opening_submit_window_bounds() -> tuple[datetime, datetime]:
+    """Return (start_et, end_et) window around 09:30:00 ET using env seconds."""
     tz = pytz.timezone("US/Eastern")
     now_et = datetime.now(tz)
-    h, m = now_et.hour, now_et.minute
-    evening_ok = (h >= 19)  # 7pm–midnight
-    morning_ok = (h < 9) or (h == 9 and m <= 28)  # midnight–9:28am
-    return bool(evening_ok or morning_ok)
+    try:
+        start_off = float(os.environ.get("OPENING_SUBMIT_WINDOW_START_SEC", "-5"))
+    except Exception:
+        start_off = -5.0
+    try:
+        end_off = float(os.environ.get("OPENING_SUBMIT_WINDOW_END_SEC", "5"))
+    except Exception:
+        end_off = 5.0
+    target = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
+    start = target + timedelta(seconds=start_off)
+    end = target + timedelta(seconds=end_off)
+    return start, end
+
+
+def _is_opening_window_now() -> bool:
+    tz = pytz.timezone("US/Eastern")
+    now_et = datetime.now(tz)
+    start, end = _opening_submit_window_bounds()
+    return start <= now_et <= end
 
 
 def main() -> None:
     load_dotenv()
-    set_data_dir(_syo())
+    set_data_dir(START_YOUR_OWN)
 
     # Load current portfolio/cash for logging updates
-    portfolio_csv = _syo() / "chatgpt_portfolio_update.csv"
+    portfolio_csv = _ensure_portfolio_csv()
     portfolio, cash = load_latest_portfolio_state(str(portfolio_csv))
 
-    # Guard: skip cleanly if outside OPG window to avoid broker errors
-    if not _is_opg_window_now():
-        print("Outside OPG window (ET 7:00pm–9:28am). Skipping submit and keeping orders queued.")
-        print("Schedule this script around 8:25am CT for automatic submission.")
-        return
+    # Guard: precise opening submission window for Schwab timed flow
+    sub_mode = (os.environ.get("SUBMISSION_MODE") or "timed").strip().lower()
+    if sub_mode == "timed":
+        if not _is_opening_window_now():
+            print("Outside opening submission window. Skipping submit and keeping orders queued.")
+            start, end = _opening_submit_window_bounds()
+            print(f"Window (ET): {start.strftime('%H:%M:%S')}–{end.strftime('%H:%M:%S')} around 09:30:00")
+            return
+    else:
+        if not _is_opening_window_now():
+            print("Outside opening submission window. Skipping.")
+            return
 
     adapter = _select_adapter()
     queue = _read_queue()
@@ -123,15 +184,33 @@ def main() -> None:
         print("No queued orders.")
         return
 
-    print(f"Submitting {len(queue)} queued orders (OPG)...")
+    print(f"Submitting {len(queue)} queued orders (opening window)...")
     # Submit all orders; store order_ids back into queue for traceability
+    # Pre-warm auth once (avoid token refresh inside tight window)
+    try:
+        _ = adapter.get_account()
+    except Exception:
+        pass
+
     for o in queue:
         status = str(o.get("status") or "").strip().lower()
         # Skip anything already acknowledged or final to avoid duplicates
         if status in {"accepted", "new", "submitted", "filled", "cancelled", "canceled"}:
             continue
         try:
-            resp = _submit_one(adapter, o)
+            # Retry transient errors quickly within window
+            backoff = 0.2
+            attempts = 0
+            while True:
+                attempts += 1
+                try:
+                    resp = _submit_one(adapter, o)
+                    break
+                except Exception as e:
+                    if attempts >= 4:
+                        raise
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 1.0)
             o["order_id"] = resp.get("order_id")
             o["status"] = resp.get("status") or "submitted"
             print(f"Submitted {o['side']} {o['ticker']} x{o['quantity']} -> {o['order_id']}")
