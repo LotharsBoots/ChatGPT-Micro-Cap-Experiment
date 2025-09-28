@@ -10,13 +10,25 @@ import requests
 from dotenv import load_dotenv
 
 
+def _normalize_secret(value: str) -> str:
+    """Trim whitespace and surrounding quotes that often sneak into secrets."""
+    if value is None:
+        return ""
+    v = str(value).strip()
+    # Strip single or double quotes if the whole value is quoted
+    if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+        v = v[1:-1].strip()
+    # Remove stray CR/LF characters
+    return v.replace("\r", "").replace("\n", "")
+
+
 class AuthState:
     """Handles Schwab OAuth token persistence and refresh."""
 
     def __init__(self) -> None:
         load_dotenv()
-        self.client_id = os.getenv("SCHWAB_CLIENT_ID") or ""
-        self.client_secret = os.getenv("SCHWAB_CLIENT_SECRET") or ""
+        self.client_id = _normalize_secret(os.getenv("SCHWAB_CLIENT_ID") or "")
+        self.client_secret = _normalize_secret(os.getenv("SCHWAB_CLIENT_SECRET") or "")
         token_path = os.getenv("SCHWAB_OAUTH_TOKEN_PATH") or "tokens/schwab_token.json"
         self.token_path = Path(token_path)
         if not self.client_id or not self.client_secret:
@@ -60,17 +72,57 @@ class AuthState:
         refresh = tokens.get("refresh_token")
         if not refresh:
             raise RuntimeError("refresh_token missing in token file; re-auth required")
-        basic = base64.b64encode(f"{self.client_id}:{self.client_secret}".encode("ascii")).decode("ascii")
+        cid = _normalize_secret(self.client_id)
+        csec = _normalize_secret(self.client_secret)
+        token_url = "https://api.schwabapi.com/v1/oauth/token"
+
+        # Try 1: Basic authorization header (confidential client)
+        route_used = None
+        basic = base64.b64encode(f"{cid}:{csec}".encode("ascii")).decode("ascii")
         headers = {"Authorization": f"Basic {basic}", "Content-Type": "application/x-www-form-urlencoded"}
         body = {"grant_type": "refresh_token", "refresh_token": str(refresh)}
-        resp = requests.post("https://api.schwabapi.com/v1/oauth/token", headers=headers, data=body, timeout=30)
+        resp = requests.post(token_url, headers=headers, data=body, timeout=30)
+        if resp.status_code == 200:
+            route_used = "basic"
+        else:
+            # Try 2: Credentials in body plus redirect_uri (some environments require this)
+            headers = {"Content-Type": "application/x-www-form-urlencoded"}
+            redirect_uri = _normalize_secret(os.getenv("SCHWAB_REDIRECT_URI") or "")
+            body = {
+                "grant_type": "refresh_token",
+                "refresh_token": str(refresh),
+                "client_id": cid,
+                "client_secret": csec,
+            }
+            if redirect_uri:
+                body["redirect_uri"] = redirect_uri
+            resp = requests.post(token_url, headers=headers, data=body, timeout=30)
+            if resp.status_code == 200:
+                route_used = "body"
+            else:
+                # Try 3: PKCE-style: client_id only (no secret)
+                headers = {"Content-Type": "application/x-www-form-urlencoded"}
+                body = {"grant_type": "refresh_token", "refresh_token": str(refresh), "client_id": cid}
+                if redirect_uri:
+                    body["redirect_uri"] = redirect_uri
+                resp = requests.post(token_url, headers=headers, data=body, timeout=30)
+                if resp.status_code == 200:
+                    route_used = "pkce"
+
         if resp.status_code != 200:
             raise RuntimeError(f"refresh_token failed: {resp.status_code} {resp.text}")
+
         new_tokens = resp.json()
         self._write_tokens(new_tokens)
         nt = new_tokens.get("access_token")
         if not nt:
             raise RuntimeError("Token refresh did not return access_token")
+        # Mask client id in logs: first/last 4
+        try:
+            masked = (cid[:4] + "..." + cid[-4:]) if cid else ""
+            print(f"[schwab] refresh route={route_used} (ci={masked})")
+        except Exception:
+            pass
         return str(nt)
 
 
