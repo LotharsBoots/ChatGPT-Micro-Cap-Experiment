@@ -1,4 +1,4 @@
-## AWS Console Runbook — Microcap Autonomous Trading (Full Context)
+## AWS Console Runbook — Microcap Autonomous Trading (Updated, 2025-10)
 
 This runbook documents the complete AWS Console context for your fully cloud, no‑desktop pipeline. It explains what exists, why, how to operate it, and how to recover. Keep this next to `AWS-Autonomous-Trading-Scheduler-Context.md` and `CLOUD-100-Percent-Mode.md` for a single‑pane reference.
 
@@ -9,7 +9,7 @@ This runbook documents the complete AWS Console context for your fully cloud, no
 - Repo/branch: `LotharsBoots/ChatGPT-Micro-Cap-Experiment` (default `API-Brokerage`).
 - AWS: Account `780372467371`, Region `us-east-1`.
 
-Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG orders during the allowed window; CSVs and queue live in S3. No desktop required.
+Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG orders during the allowed window; CSVs and queue live in S3. No desktop required. This version includes the final Schwab OAuth/accountIdKey fixes and the optional dedicated `microcap-reconcile` task family.
 
 ---
 
@@ -22,9 +22,10 @@ Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG 
   - `microcap-executor-morning` — runs `executor_morning.py`
   - `microcap-day-one` — runs `day_one_bootstrap.py` with S3 sync in/out
 - EventBridge Schedules (ET):
-  - Daily: Mon–Thu 16:00
-  - EOD: Fri 16:00
-  - Executor: Weekdays 09:25 (OPG window requirement)
+  - Daily: Mon–Thu 16:00 (target `microcap-queue-daily`)
+  - EOD: Fri 16:00 (target `microcap-queue-eod`)
+  - Executor: Weekdays ~09:29:58 (target `microcap-executor-morning`)
+  - Reconcile: Weekdays ~09:40 (target `microcap-reconcile`)
   - Retries: 3; Max event age: 2h; DLQ: `microcap-scheduler-dlq`
 - S3: `microcap-shared-state-780372467371/Start Your Own/` (queue + CSVs)
   - Archive path used by resets: `Archive/day-one-<timestamp>/`
@@ -73,6 +74,11 @@ Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG 
   - Command pattern (container):
     - `sh -lc "aws s3 sync 's3://$BUCKET/Start Your Own' 'Start Your Own' && python <script>.py && aws s3 sync 'Start Your Own' 's3://$BUCKET/Start Your Own'"`
   - Env: `BUCKET=microcap-shared-state-780372467371` + any prompt IDs/flags as needed.
+  - For Schwab-calling tasks (executor/reconcile), also set:
+    - `SCHWAB_ACCOUNT_ID=<64-hex accountIdKey, lowercase>`
+    - `SCHWAB_DISABLE_REFRESH=0` (set to `1` only for debugging)
+    - `SCHWAB_OAUTH_TOKEN_PATH=/tmp/schwab_token.json`
+    - Secrets (ValueFrom): `SCHWAB_TOKEN_JSON`, `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`
 - `microcap-day-one`
   - Same pattern; runs `day_one_bootstrap.py`.
   - Idempotent: exits early if existing positions are detected in CSVs.
@@ -88,9 +94,26 @@ Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG 
 ### 6) EventBridge Scheduler
 - Mon–Thu 16:00 ET: `microcap-queue-daily`
 - Fri 16:00 ET: `microcap-queue-eod`
-- Weekdays 09:25 ET: `microcap-executor-morning`
+- Weekdays ~09:29:58 ET: `microcap-executor-morning`
+- Weekdays ~09:40 ET: `microcap-reconcile`
 - Retries: 3; Max event age: 2h; DLQ: `microcap-scheduler-dlq`
-- Note: Schedules fire on holidays unless gated by app logic. Daily/EOD now include Alpaca calendar gating and will log a skip when market is closed.
+- Note: Schedules fire on holidays unless gated by app logic. Daily/EOD include market-calendar gating and will log a skip when market is closed.
+
+Reconcile payload examples
+- Keep task-def command (with S3 syncs) and use empty/standard payload, or set a container override like:
+```json
+{
+  "containerOverrides": [
+    {
+      "name": "app",
+      "command": [
+        "sh","-lc",
+        "aws s3 sync \"s3://$BUCKET/Start Your Own\" \"Start Your Own\" && /usr/local/bin/python -u /app/reconcile_orders.py && aws s3 sync \"Start Your Own\" \"s3://$BUCKET/Start Your Own\""
+      ]
+    }
+  ]
+}
+```
 
 ---
 
@@ -112,8 +135,11 @@ Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG 
 ---
 
 ### 8) Secrets Manager
-- Per‑key secrets recommended; ValueFrom ARNs attached directly in the task definition.
-- Required keys today: OpenAI, Alpaca (`OPENAI_API_KEY`, `ALPACA_BASE_URL`, `ALPACA_KEY_ID`, `ALPACA_SECRET_KEY`).
+- ValueFrom ARNs are attached directly in the task definition.
+- Required keys for Schwab tasks:
+  - `SCHWAB_TOKEN_JSON` → one-line JSON: `{"tokens":{"access_token":"…","refresh_token":"…"}}` (or `base64:` form)
+  - `SCHWAB_CLIENT_ID` (per‑key secret)
+  - `SCHWAB_CLIENT_SECRET` (per‑key secret)
 - Task execution role must allow `secretsmanager:GetSecretValue` for those ARNs.
 
 ---
@@ -143,7 +169,7 @@ Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG 
 
 ### 10) Holiday / Market‑Clock Gating
 - Executor: OPG window enforced programmatically (ET 7:00pm–9:28am). Outside the window, it logs a skip and leaves the queue intact.
-- Daily/EOD: Alpaca calendar check added. If today is a holiday/closed, they log a skip and exit 0 (nothing written to S3).
+- Daily/EOD: market calendar check added. If today is a holiday/closed, they log a skip and exit 0.
 
 ---
 
@@ -163,7 +189,7 @@ Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG 
 
 ---
 
-### 13) Troubleshooting Matrix
+### 13) Troubleshooting Matrix (Schwab-specific additions)
 - Docker login failing in build:
   - Symptom: `invalid control character` or malformed URL. Fix: login to REGISTRY host only; compute REGISTRY in step and strip CR `\r` before `docker login`.
 - Day‑1 workflow cannot find VPC/Subnets/SG:
@@ -174,6 +200,15 @@ Outcome: Daily and EOD generate/merge `orders_queue.json`; Executor submits OPG 
   - Symptom: `ModuleNotFoundError` in logs after push. Fix: re‑run `build-push` so ECR `:latest` includes the file; update task defs if pinned.
 - Executor “Outside OPG window”:
   - Expected when run outside ET 7:00pm–9:28am. Run during the window or rely on the 09:25 ET schedule.
+
+401 Unauthorized (Schwab)
+- Cause: expired/invalid `access_token`, or app mismatch for refresh. Fix: re‑auth Worker → update `SCHWAB_TOKEN_JSON` (one‑line). For normal ops, keep `SCHWAB_DISABLE_REFRESH=0`.
+
+JSONDecodeError on startup
+- Cause: hidden CR/LF or smart quotes in secret. Fix: one-line JSON or `base64:` form.
+
+400 Invalid account number
+- Cause: using the 8‑digit `accountNumber` on orders endpoints. Fix: set `SCHWAB_ACCOUNT_ID` to 64‑hex `accountIdKey` (from `/trader/v1/accounts/accountNumbers` → `hashValue`, lowercased).
 
 ---
 

@@ -1,4 +1,4 @@
-# 100% Cloud Context (Option B: GitHub → ECR → ECS)
+# 100% Cloud Context (GitHub → ECR → ECS, Updated 2025-10)
 
 This file is self‑contained so a new reader can operate the system entirely in the cloud with no local installs after setup.
 
@@ -18,7 +18,8 @@ This file is self‑contained so a new reader can operate the system entirely in
 - Schedules (America/New_York):
   - queue-daily @ 16:00 Mon–Thu
   - queue-eod @ 16:00 Fri
-  - executor-morning @ 09:25 Mon–Fri
+  - executor-morning ~09:29:58 Mon–Fri
+  - reconcile ~09:40 Mon–Fri (optional dedicated family `microcap-reconcile`)
   - Retry = 3; Max event age = 2h; DLQ = microcap-scheduler-dlq
 - Secrets Manager (per‑key): microcap/openai-api-key, microcap/alpaca-base-url, microcap/alpaca-key-id, microcap/alpaca-secret-key
 - S3 state: s3://microcap-shared-state-780372467371/Start Your Own/
@@ -194,7 +195,7 @@ jobs:
 ## Day‑to‑Day Operations (autonomous)
 - Mon–Thu 16:00 ET: queue_daily generates/merges orders_queue.json
 - Fri 16:00 ET: queue_eod deep‑research merge
-- Weekdays 09:25 ET: executor submits OPG and updates CSVs
+- Weekdays ~09:29:58 ET: executor submits OPG and updates CSVs; ~09:40 ET reconcile updates state
 - S3: `Start Your Own/` holds CSVs and orders_queue.json; logs: `/ecs/microcap`; DLQ: `microcap-scheduler-dlq`
 
 ---
@@ -227,3 +228,9 @@ jobs:
   - S3 RW on `Start Your Own/*` and `Archive/*` for reset.
 
 Planned: add Alpaca market‑clock gating to daily/EOD so they skip on holidays/closed market (executor already OPG‑gated).
+
+## Secrets & Schwab specifics (critical)
+- `SCHWAB_TOKEN_JSON` must contain a one-line JSON string:
+  `{"tokens":{"access_token":"…","refresh_token":"…"}}` (or save as `base64:<B64>`)
+- `SCHWAB_ACCOUNT_ID` must be the 64‑hex `accountIdKey` (lowercase) returned by `/trader/v1/accounts/accountNumbers` (field `hashValue`), not the 8‑digit `accountNumber`.
+- Normal ops: `SCHWAB_DISABLE_REFRESH=0` so the app refreshes access tokens.

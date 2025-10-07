@@ -37,7 +37,20 @@ class AuthState:
         if not self.token_path.exists():
             json_env = os.getenv("SCHWAB_TOKEN_JSON")
             if json_env:
-                parsed = json.loads(json_env)
+                raw = str(json_env).strip()
+                # Support base64-wrapped secrets to avoid hidden control chars from UIs
+                if raw.startswith("base64:"):
+                    try:
+                        b64 = raw.split(":", 1)[1]
+                        raw = base64.b64decode(b64).decode("utf-8")
+                    except Exception as exc:
+                        raise RuntimeError(f"SCHWAB_TOKEN_JSON base64 decode failed: {exc}") from exc
+                # First attempt to parse as-is; on failure, remove CR/LF inside strings and retry
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    sanitized = raw.replace("\r", "").replace("\n", "")
+                    parsed = json.loads(sanitized)
                 tokens_obj = parsed.get("tokens") if isinstance(parsed, dict) else None
                 tokens = tokens_obj if isinstance(tokens_obj, dict) else (parsed if isinstance(parsed, dict) else {})
                 if not tokens.get("access_token") or not tokens.get("refresh_token"):

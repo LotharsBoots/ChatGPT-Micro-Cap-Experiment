@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import math
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ try:
 except Exception:  # pragma: no cover - optional import guard
     ALPACA_REST = None  # type: ignore
 
+from script_portfolio_engine import _fetch_last_close
 
 from trading_script import (
     load_latest_portfolio_state,
@@ -127,19 +129,38 @@ def _normalize_orders(model_json: Dict[str, Any], portfolio_cash: float) -> List
 
     orders: List[Dict[str, Any]] = []
 
+    # Determine effective per-trade cap; clamp to 7% max as requested
+    try:
+        with open("autotrade.json", "r", encoding="utf-8") as fh:
+            _cfg = json.load(fh)
+            cfg_pct = float(_cfg.get("per_trade_cash_pct", 0.15))
+    except Exception:
+        cfg_pct = 0.15
+    effective_cap_pct = min(0.07, max(0.0, cfg_pct))
+
     def add(side: str, item: Dict[str, Any]) -> None:
         ticker = _strict_upper_ticker(item.get("ticker", ""))
         order_type = str(item.get("order_type", "")).upper()
         limit_price = item.get("limit_price")
         qty = None
 
+        # Use last close for sizing; fallback to 100 to avoid runaway sizes
+        px = float(_fetch_last_close(ticker))
+        if not (px > 0 and math.isfinite(px)):
+            px = 100.0
+
+        # Absolute cap under effective percentage
+        max_cash = float(portfolio_cash) * effective_cap_pct
+        max_affordable = max(1, int(max_cash // px))
+
         if "quantity" in item:
-            qty = int(float(item["quantity"]))
+            raw_qty = int(float(item["quantity"]))
+            qty = max(1, min(raw_qty, max_affordable))
         elif "percent" in item:
-            pct = float(item["percent"])  # 0..1
-            # Rough placeholder sizing using cash only; executor will finalize qty with prices
-            approx_price = 1.0
-            qty = max(1, int((portfolio_cash * pct) // approx_price))
+            pct = float(item["percent"])  # may be >1
+            pct = max(0.0, min(0.07, pct))
+            spend = float(portfolio_cash) * min(pct, effective_cap_pct)
+            qty = max(1, int(spend // px))
 
         if qty is None or qty <= 0:
             raise ValueError("quantity/percent must produce positive qty")
