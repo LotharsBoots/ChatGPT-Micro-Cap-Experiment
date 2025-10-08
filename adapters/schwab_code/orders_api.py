@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+import os
+import json
 
 from .http_client import request_with_refresh
 from .time_windows import orders_time_window_iso
@@ -34,6 +36,12 @@ def submit_order(account_id: str, order: Dict[str, Any]) -> Dict[str, Any]:
         body["price"] = float(limit_price)
 
     p = f"/trader/v1/accounts/{account_id}/orders"
+    # Optional payload logging gated by env (no secrets)
+    try:
+        if str(os.environ.get("LOG_ORDER_PAYLOAD") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            print("[order_payload] " + json.dumps(body, separators=(",", ":")))
+    except Exception:
+        pass
     resp = request_with_refresh("POST", p, json_body=body)
     if resp.status_code not in {200, 201}:
         raise RuntimeError(f"Schwab submit_order failed: {resp.status_code} {resp.text}")

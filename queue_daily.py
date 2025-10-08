@@ -202,7 +202,7 @@ def main() -> None:
         else:
             pending_existing.append(it)
 
-    pending_merged = _coalesce_pending(pending_existing + new_orders)
+    pending_merged = _coalesce_pending(new_orders)
     merged = carry + pending_merged
     _write_json(qpath, merged)
 
