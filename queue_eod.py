@@ -231,6 +231,13 @@ def _call_deep_research_via_prompt_id(payload: Dict[str, Any]) -> Dict[str, Any]
     if pver:
         prompt_obj["version"] = pver
 
+    # Optional: log exact payload sent to the LLM (for debugging/visibility)
+    try:
+        if (os.getenv("LOG_LLM_PAYLOAD") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            print("[eod_llm_input] " + json.dumps(payload, separators=(",", ":")))
+    except Exception:
+        pass
+
     # Send ONLY a user message containing our JSON payload; developer/tools live in the Prompt
     resp = client.responses.create(
         prompt=prompt_obj,

@@ -104,6 +104,13 @@ def _call_daily_prompt(payload: Dict[str, Any]) -> Dict[str, Any]:
     if pver:
         prompt_obj["version"] = pver  # pins a specific version if you set it
 
+    # Optional: log exact payload sent to the Daily LLM (for visibility)
+    try:
+        if (os.getenv("LOG_LLM_PAYLOAD") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            print("[daily_llm_input] " + json.dumps(payload, separators=(",", ":")))
+    except Exception:
+        pass
+
     resp = client.responses.create(
         prompt=prompt_obj,
         input=[{

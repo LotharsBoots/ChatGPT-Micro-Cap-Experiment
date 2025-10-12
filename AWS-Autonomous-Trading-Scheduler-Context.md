@@ -219,15 +219,19 @@ Idempotency:
 - queue-daily
   - `sh`
   - `-lc`
-  - `aws s3 sync "s3://$BUCKET/Start Your Own" "Start Your Own" && python queue_daily.py && aws s3 sync "Start Your Own" "s3://$BUCKET/Start Your Own"`
+  - `aws s3 sync s3://$BUCKET/Start\ Your\ Own/$ACCOUNT Start\ Your\ Own && export SCHWAB_ACCOUNT_ID="$(tr -d '\r\n' < 'Start Your Own/account_id.txt')" && if [ -f Start\ Your\ Own/autotrade.json ]; then cp Start\ Your\ Own/autotrade.json ./autotrade.json; fi && rm -f Start\ Your\ Own/orders_queue.json || true && python queue_daily.py && aws s3 sync Start\ Your\ Own s3://$BUCKET/Start\ Your\ Own/$ACCOUNT`
 - queue-eod
   - `sh`
   - `-lc`
-  - `aws s3 sync "s3://$BUCKET/Start Your Own" "Start Your Own" && python queue_eod.py && aws s3 sync "Start Your Own" "s3://$BUCKET/Start Your Own"`
+  - `aws s3 sync s3://$BUCKET/Start\ Your\ Own/$ACCOUNT Start\ Your\ Own && export SCHWAB_ACCOUNT_ID="$(tr -d '\r\n' < 'Start Your Own/account_id.txt')" && if [ -f Start\ Your\ Own/autotrade.json ]; then cp Start\ Your\ Own/autotrade.json ./autotrade.json; fi && rm -f Start\ Your\ Own/orders_queue.json || true && python queue_eod.py && aws s3 sync Start\ Your\ Own s3://$BUCKET/Start\ Your\ Own/$ACCOUNT`
 - executor
   - `sh`
   - `-lc`
-  - `aws s3 sync "s3://$BUCKET/Start Your Own" "Start Your Own" && python executor_morning.py && aws s3 sync "Start Your Own" "s3://$BUCKET/Start Your Own"`
+  - `aws s3 sync s3://$BUCKET/Start\ Your\ Own/$ACCOUNT Start\ Your\ Own && export SCHWAB_ACCOUNT_ID="$(tr -d '\r\n' < 'Start Your Own/account_id.txt')" && python executor_morning.py && aws s3 sync Start\ Your\ Own s3://$BUCKET/Start\ Your\ Own/$ACCOUNT`
+- reconcile
+  - `sh`
+  - `-lc`
+  - `aws s3 sync s3://$BUCKET/Start\ Your\ Own/$ACCOUNT Start\ Your\ Own && export SCHWAB_ACCOUNT_ID="$(tr -d '\r\n' < 'Start Your Own/account_id.txt')" && python reconcile_orders.py && aws s3 sync Start\ Your\ Own s3://$BUCKET/Start\ Your\ Own/$ACCOUNT`
 
 ---
 

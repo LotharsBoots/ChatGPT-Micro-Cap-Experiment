@@ -5,7 +5,7 @@ This file is a live checklist. Canonical architecture is in `AWS-Autonomous-Trad
 ### Completed (baseline)
 - ECS roles standardized on all families: Task role `microcap-task-role`, Execution role `microcap-execution-role`.
 - `queue_daily` fixed to avoid quantity accumulation; new revisions deployed; EventBridge targets updated.
-- `reconcile` uses S3 token file (`SCHWAB_OAUTH_TOKEN_PATH=Start Your Own/schwab_token.json`) and same Secrets Manager ARNs; refresh works.
+- `executor_morning` and `reconcile` use `SCHWAB_TOKEN_JSON` from Secrets Manager. Do NOT set `SCHWAB_OAUTH_TOKEN_PATH`.
 - S3 state bucket: Versioning ENABLED + lifecycle (delete noncurrent after 30d; abort MPU after 7d; delete expired delete markers).
 - DLQ alarm: `microcap-scheduler-dlq` ≥ 1 → SNS `microcap-alerts` (email). Runbook updated.
 - Reset + Day‑1 task families working and documented.
@@ -35,6 +35,11 @@ This file is a live checklist. Canonical architecture is in `AWS-Autonomous-Trad
 - Optional risk UI: S3‑hosted single‑page form with Cognito identity to edit `Start Your Own/autotrade.json` (no API server).
 - Image digests in task defs for immutable rollbacks; blue/green via pinned revisions.
 - Optional dual‑broker support toggle; idempotency keys across brokers.
+
+### Notes / Decisions (keep visible)
+- Autonomy-first focus: prioritize end-to-end reliability (schedules → queue → execute → reconcile) before prompt/strategy tweaks. Defer fine‑tuning until the loop is green for multiple days.
+- Front-end vision: build a simple web UI (Cognito + S3) to edit runtime knobs and prompt text (daily/eod) safely. UI writes to `Start Your Own/autotrade.json` and `prompt_*.txt`; tasks pick up automatically.
+- Account profiles: support multiple Schwab accounts via ALIAS profiles (e.g., `acct1`, `acct2`). Each profile has its own Secrets and S3 state subfolder `Start Your Own/$ALIAS`. Front-end will switch EventBridge targets between profile task families for two-click account rotation.
 
 ### SOPs
 - Weekly token rotation
@@ -115,7 +120,6 @@ This document captures the current state, architecture, and step-by-step tasks f
         { "name": "BROKER", "value": "schwab" },
         { "name": "SCHWAB_ACCOUNT_ID", "value": "81718749" },
         { "name": "SCHWAB_REDIRECT_URI", "value": "https://schwab-oauth-worker.lotharsboots.workers.dev/callback" },
-        { "name": "SCHWAB_OAUTH_TOKEN_PATH", "value": "tokens/schwab_token.json" },
         { "name": "SUBMISSION_MODE", "value": "timed" },
         { "name": "OPENING_SUBMIT_WINDOW_START_SEC", "value": "-5" },
         { "name": "OPENING_SUBMIT_WINDOW_END_SEC", "value": "5" },
@@ -145,7 +149,7 @@ This document captures the current state, architecture, and step-by-step tasks f
 
 4) Secrets and env (Task Definition level)
    - Secrets (ValueFrom): `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, `SCHWAB_TOKEN_JSON`.
-   - Env (Value): `BROKER=schwab`, `SCHWAB_ACCOUNT_ID=81718749`, `SCHWAB_REDIRECT_URI`, `SCHWAB_OAUTH_TOKEN_PATH=tokens/schwab_token.json`, `SUBMISSION_MODE=timed`, `OPENING_SUBMIT_WINDOW_START_SEC=-5`, `OPENING_SUBMIT_WINDOW_END_SEC=5`.
+- Env (Value): `BROKER=schwab`, `SCHWAB_ACCOUNT_ID=81718749`, `SCHWAB_REDIRECT_URI`, `SUBMISSION_MODE=timed`, `OPENING_SUBMIT_WINDOW_START_SEC=-5`, `OPENING_SUBMIT_WINDOW_END_SEC=5`.
 
 5) Image
    - ECR: `780372467371.dkr.ecr.us-east-1.amazonaws.com/microcap:Schwab` (fresh build/push when code changes).

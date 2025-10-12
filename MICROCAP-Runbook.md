@@ -69,6 +69,70 @@ flowchart TD
 - Least privilege: Task role must allow `s3:ListBucket` on the bucket with `s3:prefix` limited to `Start Your Own/*` and `Archive/*`, plus `GetObject/PutObject/DeleteObject` on those prefixes.
 - Logging: All tasks write to CloudWatch group `/ecs/microcap` with stream prefixes matching the task.
 - Schedules: EventBridge rules in America/New_York timezone; DLQ attached for start failures.
-- Safety: Paper mode by default; executor never assumes fills; quantity accumulation across days is disabled in the daily queue.
+- Safety: Paper mode by default; executor never assumes fills; quantity accumulation across days is disabled in the daily queue. We always clear and rewrite `orders_queue.json` each run.
+
+### Current implementation decisions (do not revert)
+- Auth for Schwab callers (executor_morning, reconcile):
+  - Use `SCHWAB_TOKEN_JSON` from Secrets Manager.
+  - Do NOT set `SCHWAB_OAUTH_TOKEN_PATH` anywhere.
+  - Ensure `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET` (ValueFrom secrets) and `SCHWAB_REDIRECT_URI=https://schwab-oauth-worker.lotharsboots.workers.dev/callback` are present.
+- Profiles / ACCOUNT handling:
+  - `ACCOUNT` in task definitions is `ValueFrom` the secret `microcap/runtime-profile:ACCOUNT::`.
+  - Per-account isolation is `Start Your Own/$ACCOUNT/` with `account_id.txt` (short brokerage account number) in each folder.
+  - Schedules (or rules) may override `ACCOUNT` with a plain string `acctN` to run multiple accounts concurrently.
+- Queue generation:
+  - `queue_daily` and `queue_eod` clear and rewrite `orders_queue.json` each run (no accumulation).
+  - If a prior error status exists in the queue, regenerate the file; executor won’t resubmit non‑pending items.
+- Testing executor outside 09:30 ET:
+  - Temporarily widen the window via command override (inline env on python) for a one‑off run only.
+
+### Schedules vs Rules
+- You can use EventBridge Scheduler (schedules) or EventBridge Rules; both work.
+- For multi‑account via schedules: create one schedule per job per account with `ACCOUNT=acctN` override.
+- For fewer schedules (5 total), use the Lambda launcher (see Multiple-Accounts-Goal-and-Solution.md) to fan out `ecs:RunTask` for each account.
+
+### Optional: Pre‑open probe (future)
+- Purpose: Warm Schwab auth/HTTP a minute before open to reduce cold refresh risk at 09:30.
+- Approach: Add a `PROBE=1` fast path to `reconcile_orders.py` that only calls `accounts/list` (no S3 writes) and exits.
+- Scheduling: Keep a separate 09:29 ET schedule targeting the launcher with `{"taskFamily":"microcap-reconcile"}` plus container override `PROBE=1` (launcher can be extended to pass env on this schedule only).
+- Status: Not required today; executor already pre‑warms auth. Enable later if you observe token refresh at 09:30 causing delays.
+
+### Canonical task commands (use these, not older variants)
+All commands are run with Entry point: `sh, -lc` and rely on `ACCOUNT` being set (either from the ValueFrom secret or a schedule override). For executor/reconcile, ensure `SCHWAB_TOKEN_JSON` is configured (Secrets Manager) and there is **no** `SCHWAB_OAUTH_TOKEN_PATH` anywhere.
+
+- queue_daily
+```
+aws s3 sync "s3://$BUCKET/Start Your Own/$ACCOUNT" "Start Your Own" \
+&& if [ -f "Start Your Own/autotrade.json" ]; then cp "Start Your Own/autotrade.json" ./autotrade.json; fi \
+&& rm -f "Start Your Own/orders_queue.json" || true \
+&& python queue_daily.py \
+&& aws s3 sync "Start Your Own" "s3://$BUCKET/Start Your Own/$ACCOUNT"
+```
+
+- queue_eod
+```
+aws s3 sync "s3://$BUCKET/Start Your Own/$ACCOUNT" "Start Your Own" \
+&& if [ -f "Start Your Own/autotrade.json" ]; then cp "Start Your Own/autotrade.json" ./autotrade.json; fi \
+&& rm -f "Start Your Own/orders_queue.json" || true \
+&& python queue_eod.py \
+&& aws s3 sync "Start Your Own" "s3://$BUCKET/Start Your Own/$ACCOUNT"
+```
+
+- executor_morning (Schwab caller)
+```
+aws s3 sync "s3://$BUCKET/Start Your Own/$ACCOUNT" "Start Your Own" \
+&& export SCHWAB_ACCOUNT_ID="$(tr -d '\r\n' < 'Start Your Own/account_id.txt')" \
+&& python executor_morning.py \
+&& aws s3 sync "Start Your Own" "s3://$BUCKET/Start Your Own/$ACCOUNT"
+```
+
+- reconcile (Schwab caller)
+```
+aws s3 sync "s3://$BUCKET/Start Your Own/$ACCOUNT" "Start Your Own" \
+&& export SCHWAB_ACCOUNT_ID="$(tr -d '\r\n' < 'Start Your Own/account_id.txt')" \
+&& python reconcile_orders.py \
+&& aws s3 sync "Start Your Own" "s3://$BUCKET/Start Your Own/$ACCOUNT"
+```
+
 
 
