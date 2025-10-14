@@ -24,6 +24,31 @@ This file is a live checklist. Canonical architecture is in `AWS-Autonomous-Trad
    - Secrets Manager key `microcap/runtime-switches` with `{ "enabled": true, "mode": "paper" }`.
    - All tasks read it and exit 0 if `enabled=false`; executor refuses live unless `mode="live"`.
 
+#### Plan — Day‑One bootstrap via Schwab settled cash (per‑account)
+- Goal: On first run only, seed CSVs with the account’s actual settled cash from Schwab; no manual `STARTING_CASH` entry.
+- Approach:
+  - In `day_one_bootstrap.py`, if `STARTING_CASH` is missing or set to `broker`, call `SchwabAdapter().get_account()` and use settled cash (`cashBalance`) for that `SCHWAB_ACCOUNT_ID`.
+  - If the call fails or returns 0, exit with a clear error asking for manual `STARTING_CASH`.
+  - Idempotent: if positions already exist, Day‑One exits unchanged.
+- Ops:
+  - To use: Run `microcap-day-one` with `ACCOUNT=<alias>`. Leave `STARTING_CASH` blank or set to `broker`.
+  - Logs show the settled cash used; CSVs are written under `Start Your Own/$ACCOUNT/`.
+- Tests:
+  - Fresh profile folder with only `account_id.txt` → run Day‑One → verify CSV shows Schwab settled cash.
+  - Retry Day‑One with existing positions → logs “already initialized”, no changes.
+
+#### Plan — Day‑One simple flow (replace bootstrap script)
+- Add `day_one_simple.py` that:
+  - Reads settled cash from Schwab for the selected account (via `SCHWAB_ACCOUNT_ID`).
+  - Overwrites `chatgpt_portfolio_update.csv` with today’s header + single TOTAL row using that cash.
+  - Ensures `chatgpt_trade_log.csv` exists (header if missing).
+- Day‑One command override (array of 3 strings):
+  1) `sh`
+  2) `-lc`
+  3) `aws s3 sync "s3://$BUCKET/Start\ Your\ Own/$ACCOUNT" "Start\ Your\ Own" && export SCHWAB_ACCOUNT_ID="$(tr -d '\r\n' < 'Start Your Own/account_id.txt')" && python day_one_simple.py && aws s3 sync "Start Your Own" "s3://$BUCKET/Start\ Your\ Own/$ACCOUNT"`
+- Env when running Day‑One: `BUCKET=<bucket>`, `ACCOUNT=<alias>` only (no STARTING_CASH).
+- Safety: If existing CSVs are present, this overwrites them. Archive first or rely on S3 versioning.
+
 ### Medium term (next 2–4 weeks)
 - Durable audit: append non-sensitive order request/response metadata to S3 as daily JSONL (idempotent).
 - Pre‑trade risk: exposure caps (portfolio % and cash), per‑order notional cap, allowlist/time windows; log rejects.
