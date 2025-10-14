@@ -24,11 +24,11 @@ flowchart TD
 ---
 
 ### 2) Day One — `microcap-day-one`
-- Purpose: Initialize a fresh portfolio snapshot and cash using `STARTING_CASH`; writes `chatgpt_portfolio_update.csv` and ensures CSVs exist.
-- Behavior: Sync S3 → local (with delete), run `day_one_bootstrap.py`, then sync local → S3. Idempotent: if any positions already exist, it logs “already initialized.”
-- Why it matters: Establishes the starting cash and baseline CSVs for the autonomous pipeline.
-- Inputs: `BUCKET`, `STARTING_CASH` (set at run time). Uses public internet egress to price tickers.
-- Run from AWS Console: ECS → Task definitions → `microcap-day-one` → Latest → Run task → Container overrides → Environment: set `STARTING_CASH` → Run. Verify S3 `Start Your Own/chatgpt_portfolio_update.csv` (today’s TOTAL row).
+- Purpose: Initialize a fresh portfolio snapshot with Schwab settled cash; writes `chatgpt_portfolio_update.csv` (TOTAL row) and ensures `chatgpt_trade_log.csv` exists.
+- Behavior: Sync S3 → local, export `SCHWAB_ACCOUNT_ID` from `account_id.txt`, run `day_one_simple.py`, then sync local → S3 (per account folder).
+- Why it matters: Establishes the baseline CSVs from broker truth (cash-only, no positions) for the autonomous pipeline.
+- Inputs: `BUCKET`, `ACCOUNT` (alias). Secrets: `SCHWAB_CLIENT_ID`, `SCHWAB_CLIENT_SECRET`, `SCHWAB_TOKEN_JSON`, `SCHWAB_REDIRECT_URI`.
+- Run from AWS Console: ECS → Task definitions → `microcap-day-one` → Latest → Run task → Container overrides → Environment: set `ACCOUNT=<alias>` → Run. Verify S3 `Start Your Own/$ACCOUNT/chatgpt_portfolio_update.csv` (today’s TOTAL row).
 
 ---
 

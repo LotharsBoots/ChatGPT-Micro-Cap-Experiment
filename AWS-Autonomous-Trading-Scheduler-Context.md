@@ -31,10 +31,11 @@ No UI or endpoints; scheduled container runs that read → process → write.
 1) One-time Day‑1 init (manual)
    - ECS → Clusters → `microcap-cluster` → Run new task
    - Task definition: `microcap-day-one` (latest), Launch type: FARGATE, Platform: LATEST
-   - Container overrides → Environment → add `STARTING_CASH = <your amount>` (e.g., 3500)
+   - Container overrides → Environment: set `ACCOUNT=<alias>`; `BUCKET` already set in task def
+   - Command (array): `sh`, `-lc`, `aws s3 sync "s3://$BUCKET/Start\ Your\ Own/$ACCOUNT" "Start\ Your\ Own" && export SCHWAB_ACCOUNT_ID="$(tr -d '\r\n' < 'Start Your Own/account_id.txt' | tr -cd '0-9')" && python day_one_simple.py && aws s3 sync "Start Your Own" "s3://$BUCKET/Start\ Your\ Own/$ACCOUNT"`
    - Networking: default VPC, any two default subnets, default security group, Public IP = Enabled → Run task
    - Logs: CloudWatch `/ecs/microcap` prefix `day-one/`
-   - Idempotent: if positions already exist, it logs “already initialized” and exits.
+   - Outcome: fresh CSVs under `Start Your Own/$ACCOUNT/` (today TOTAL row; trade log header)
 
 2) Autonomous schedules (no clicks after Day‑1)
    - Mon–Thu 4:00 PM ET: `microcap-queue-daily` → writes/merges `orders_queue.json`
@@ -384,11 +385,11 @@ Idempotency:
 - GitHub OIDC role created: `microcap-github-oidc-role` (trust restricted to repo `LotharsBoots/ChatGPT-Micro-Cap-Experiment`, branch `API-Brokerage`).
 - GitHub Actions workflows in repo:
   - `build-push`: builds Docker image and pushes to ECR on `API-Brokerage` (and manual dispatch). Docker login targets the ECR REGISTRY host; image is pushed as `:latest`.
-  - `run-day-one`: manually runs Day‑1 with `STARTING_CASH`, finds latest `microcap-day-one` task‑def, detects default VPC/subnets/SG, and runs one Fargate task.
+  - `run-day-one`: manually runs Day‑1 with settled cash (via day_one_simple.py), finds latest `microcap-day-one` task‑def, detects default VPC/subnets/SG, and runs one Fargate task.
   - `reset-day-one`: archives S3 `Start Your Own/` to `Archive/day-one-<timestamp>/`, clears it, then dispatches `run-day-one` automatically.
 - ECS task definition `microcap-day-one` added:
   - Image: `780372467371.dkr.ecr.us-east-1.amazonaws.com/microcap:latest`
-  - Command: `sh -lc "aws s3 sync s3://$BUCKET/Start Your Own 'Start Your Own' && python day_one_bootstrap.py && aws s3 sync 'Start Your Own' s3://$BUCKET/Start Your Own"`
+  - Command: `sh -lc "aws s3 sync s3://$BUCKET/Start\ Your\ Own/$ACCOUNT 'Start Your Own' && export SCHWAB_ACCOUNT_ID=\"$(tr -d '\r\n' < 'Start Your Own/account_id.txt' | tr -cd '0-9')\" && python day_one_simple.py && aws s3 sync 'Start Your Own' s3://$BUCKET/Start\ Your\ Own/$ACCOUNT"`
   - Env: `BUCKET=microcap-shared-state-780372467371`
 - IAM (tight additions for workflows):
   - EC2 Describe read‑only for VPC/Subnets/SecurityGroups (Day‑1 workflow network discovery).
