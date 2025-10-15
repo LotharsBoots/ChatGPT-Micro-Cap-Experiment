@@ -130,6 +130,24 @@ class AuthState:
         nt = new_tokens.get("access_token")
         if not nt:
             raise RuntimeError("Token refresh did not return access_token")
+        # Persist refreshed tokens back to Secrets Manager if configured
+        try:
+            secret_arn = (os.getenv("SCHWAB_TOKEN_SECRET_ARN") or "").strip()
+            if secret_arn:
+                import boto3  # lazy import; optional dependency
+                sm = boto3.client("secretsmanager")
+                payload = json.dumps({"tokens": new_tokens})
+                sm.put_secret_value(SecretId=secret_arn, SecretString=payload)
+                try:
+                    masked = secret_arn[:12] + "..." + secret_arn[-6:]
+                    print(f"[schwab] wrote refreshed tokens to Secrets Manager ({masked})")
+                except Exception:
+                    pass
+        except Exception as e:
+            try:
+                print(f"[schwab] WARN: failed to write refreshed tokens to secret: {e}")
+            except Exception:
+                pass
         # Mask client id in logs: first/last 4
         try:
             masked = (cid[:4] + "..." + cid[-4:]) if cid else ""

@@ -19,33 +19,12 @@ def get_account(account_id: str) -> Dict[str, Any]:
                 break
     if not raw:
         raise RuntimeError("Account not found in list response")
-
     sa = raw.get("securitiesAccount", {}) if isinstance(raw, dict) else {}
-    current = sa.get("currentBalances", {}) if isinstance(sa, dict) else {}
     initial = sa.get("initialBalances", {}) if isinstance(sa, dict) else {}
-
-    # Prefer settled cash from currentBalances (late-day deposits show here);
-    # fall back to cashAvailableForWithdrawal, then initialBalances.cashBalance.
-    cash_val = 0.0
-    try:
-        cash_val = float(current.get("cashBalance", 0.0) or 0.0)
-    except Exception:
-        cash_val = 0.0
-    if cash_val == 0.0:
-        try:
-            cash_val = float(current.get("cashAvailableForWithdrawal", 0.0) or 0.0)
-        except Exception:
-            pass
-    if cash_val == 0.0:
-        try:
-            cash_val = float(initial.get("cashBalance", 0.0) or 0.0)
-        except Exception:
-            pass
-
     return {
         "account_id": sa.get("accountNumber"),
         "type": sa.get("type"),
-        "cash": cash_val,
+        "cash": float(initial.get("cashBalance", 0.0) or 0.0),
         "buying_power": float(initial.get("buyingPower", 0.0) or 0.0),
         "raw": raw,
     }
