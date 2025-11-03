@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 import os
+from pathlib import Path
 
 from ..adapter import BrokerAdapter
 from .accounts_api import get_account as _get_account, get_positions as _get_positions
@@ -10,9 +11,20 @@ from .orders_api import submit_order as _submit_order, list_orders as _list_orde
 
 class SchwabAdapter(BrokerAdapter):
     def __init__(self) -> None:
-        self._account_id = (os.getenv("SCHWAB_ACCOUNT_ID") or "").strip()
+        # Prefer explicit env; fallback to synced file Start Your Own/account_id.txt
+        acct = (os.getenv("SCHWAB_ACCOUNT_ID") or "").strip()
+        if not acct:
+            try:
+                p = Path("Start Your Own") / "account_id.txt"
+                if p.exists():
+                    raw = p.read_text(encoding="utf-8")
+                    # Digits only; trims CR/LF and any stray chars
+                    acct = "".join(ch for ch in raw if ch.isdigit())
+            except Exception:
+                acct = ""
+        self._account_id = acct
         if not self._account_id:
-            raise RuntimeError("SCHWAB_ACCOUNT_ID not set in environment")
+            raise RuntimeError("SCHWAB_ACCOUNT_ID not set in environment and Start Your Own/account_id.txt missing")
 
     def get_account(self) -> Dict[str, Any]:
         return _get_account(self._account_id)

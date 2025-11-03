@@ -8,6 +8,7 @@ import os
 
 import requests
 from dotenv import load_dotenv
+import boto3
 
 
 def _normalize_secret(value: str) -> str:
@@ -127,6 +128,16 @@ class AuthState:
 
         new_tokens = resp.json()
         self._write_tokens(new_tokens)
+        # Persist refreshed tokens back to Secrets Manager if configured
+        try:
+            secret_arn = _normalize_secret(os.getenv("SCHWAB_TOKEN_SECRET_ARN") or "")
+            if secret_arn:
+                sm = boto3.client("secretsmanager")
+                payload = json.dumps({"tokens": new_tokens})
+                sm.put_secret_value(SecretId=secret_arn, SecretString=payload)
+                print("[schwab] persisted rotated tokens to Secrets Manager")
+        except Exception as e:
+            print(f"[schwab] warn: failed to persist rotated tokens: {e}")
         nt = new_tokens.get("access_token")
         if not nt:
             raise RuntimeError("Token refresh did not return access_token")

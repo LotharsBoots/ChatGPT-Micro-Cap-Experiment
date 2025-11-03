@@ -34,6 +34,26 @@ START_YOUR_OWN = ROOT / "Start Your Own"
 ORDERS_PATH = START_YOUR_OWN / "orders_queue.json"
 
 
+def _write_status(payload: Dict[str, Any]) -> None:
+    """Persist a small execution status JSON under Start Your Own/status/.
+
+    File name is timestamped so each run is distinct and will be synced to S3
+    by the surrounding task command.
+    """
+    try:
+        status_dir = START_YOUR_OWN / "status"
+        status_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.utcnow().strftime("%Y%m%d-%H%M%SZ")
+        path = status_dir / f"executor_{ts}.json"
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, default=str)
+        os.replace(tmp, path)
+    except Exception:
+        # Best-effort only; never fail the run due to status write
+        pass
+
+
 def _read_queue() -> List[Dict[str, Any]]:
     p = ORDERS_PATH
     try:
@@ -55,27 +75,14 @@ def _write_queue(data: List[Dict[str, Any]]) -> None:
 def _ensure_portfolio_csv() -> Path:
     """Ensure Start Your Own/chatgpt_portfolio_update.csv exists inside the container.
 
-    If missing, try to seed it from the repository copy under
-    "Scripts and CSV Files/chatgpt_portfolio_update.csv".
+    If missing, create an empty CSV with standard headers. Day-One will
+    later overwrite it with a fresh snapshot from Schwab.
     """
     syo = START_YOUR_OWN
     syo.mkdir(parents=True, exist_ok=True)
     dst = syo / "chatgpt_portfolio_update.csv"
     if dst.exists():
         return dst
-    # Try common source locations inside the image
-    candidates = [
-        ROOT / "Scripts and CSV Files" / "chatgpt_portfolio_update.csv",
-        ROOT / "Start Your Own" / "chatgpt_portfolio_update.csv",
-    ]
-    for c in candidates:
-        try:
-            if c.exists():
-                dst.write_text(c.read_text(encoding="utf-8"), encoding="utf-8")
-                print("Seeded portfolio CSV from", str(c))
-                return dst
-        except Exception:
-            pass
     # If we couldn't seed, create an empty CSV with expected headers so
     # downstream code treats it as empty portfolio and initializes cash.
     try:
@@ -167,21 +174,39 @@ def main() -> None:
 
     # Guard: precise opening submission window for Schwab timed flow
     sub_mode = (os.environ.get("SUBMISSION_MODE") or "timed").strip().lower()
+    window_start, window_end = _opening_submit_window_bounds()
+    status_base: Dict[str, Any] = {
+        "started_utc": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "window_start_et": window_start.strftime("%Y-%m-%d %H:%M:%S"),
+        "window_end_et": window_end.strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": sub_mode,
+    }
+    # Optional: wait until the window opens (never submit early)
+    wait_for_window = (os.environ.get("WAIT_FOR_WINDOW") or "0").strip().lower() in {"1", "true", "yes", "on"}
+    if sub_mode == "timed" and wait_for_window:
+        tz = pytz.timezone("US/Eastern")
+        now_et = datetime.now(tz)
+        if now_et < window_start:
+            # Block until the opening window begins
+            time.sleep((window_start - now_et).total_seconds())
+
     if sub_mode == "timed":
         if not _is_opening_window_now():
             print("Outside opening submission window. Skipping submit and keeping orders queued.")
-            start, end = _opening_submit_window_bounds()
-            print(f"Window (ET): {start.strftime('%H:%M:%S')}–{end.strftime('%H:%M:%S')} around 09:30:00")
+            print(f"Window (ET): {window_start.strftime('%H:%M:%S')}–{window_end.strftime('%H:%M:%S')} around 09:30:00")
+            _write_status({**status_base, "result": "skipped_outside_window"})
             return
     else:
         if not _is_opening_window_now():
             print("Outside opening submission window. Skipping.")
+            _write_status({**status_base, "result": "skipped_outside_window"})
             return
 
     adapter = _select_adapter()
     queue = _read_queue()
     if not queue:
         print("No queued orders.")
+        _write_status({**status_base, "result": "no_queue"})
         return
 
     print(f"Submitting {len(queue)} queued orders (opening window)...")
@@ -192,6 +217,8 @@ def main() -> None:
     except Exception:
         pass
 
+    submitted = 0
+    errors = 0
     for o in queue:
         status = str(o.get("status") or "").strip().lower()
         # Skip anything already acknowledged or final to avoid duplicates
@@ -214,8 +241,10 @@ def main() -> None:
             o["order_id"] = resp.get("order_id")
             o["status"] = resp.get("status") or "submitted"
             print(f"Submitted {o['side']} {o['ticker']} x{o['quantity']} -> {o['order_id']}")
+            submitted += 1
         except Exception as e:
             o["status"] = f"error: {e}"
+            errors += 1
     _write_queue(queue)
 
     # Poll for fills for ~10 minutes (short loop)
@@ -279,6 +308,13 @@ def main() -> None:
             )
 
     print("Executor complete. CSVs updated in 'Start Your Own'.")
+    _write_status({
+        **status_base,
+        "result": "completed",
+        "queue_len": len(queue),
+        "submitted": submitted,
+        "errors": errors,
+    })
 
 
 if __name__ == "__main__":

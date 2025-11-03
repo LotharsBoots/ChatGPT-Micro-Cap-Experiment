@@ -58,19 +58,6 @@ def _ensure_portfolio_csv() -> Path:
     dst = START_YOUR_OWN / "chatgpt_portfolio_update.csv"
     if dst.exists():
         return dst
-    # Attempt seeding from repo copy
-    srcs = [
-        ROOT / "Scripts and CSV Files" / "chatgpt_portfolio_update.csv",
-        ROOT / "Start Your Own" / "chatgpt_portfolio_update.csv",
-    ]
-    for s in srcs:
-        try:
-            if s.exists():
-                dst.write_text(s.read_text(encoding="utf-8"), encoding="utf-8")
-                print("Seeded portfolio CSV from", str(s))
-                return dst
-        except Exception:
-            pass
     # Fallback: create empty headers
     headers = [
         "Date",
